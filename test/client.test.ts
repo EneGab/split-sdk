@@ -137,3 +137,93 @@ describe("checkRPCHealth", () => {
     expect(health.blockHeight).toBe(0);
   });
 });
+
+describe("getOptimisticInvoice", () => {
+  it("increments funded by payment amount", async () => {
+    const { getOptimisticInvoice } = await import("../src/optimistic.js");
+    const invoice = {
+      id: "1",
+      creator: "GABC",
+      recipients: [{ address: "GDEF", amount: 100n }],
+      token: "CUSDC",
+      deadline: 1000000,
+      funded: 50n,
+      status: "Pending" as const,
+      payments: [],
+    };
+    const payment = { payer: "GPAYER", amount: 30n };
+    const optimistic = getOptimisticInvoice(invoice, payment);
+    expect(optimistic.funded).toBe(80n);
+  });
+
+  it("appends payment to payments array", async () => {
+    const { getOptimisticInvoice } = await import("../src/optimistic.js");
+    const invoice = {
+      id: "1",
+      creator: "GABC",
+      recipients: [{ address: "GDEF", amount: 100n }],
+      token: "CUSDC",
+      deadline: 1000000,
+      funded: 50n,
+      status: "Pending" as const,
+      payments: [{ payer: "GPAYER1", amount: 50n }],
+    };
+    const payment = { payer: "GPAYER2", amount: 30n };
+    const optimistic = getOptimisticInvoice(invoice, payment);
+    expect(optimistic.payments).toHaveLength(2);
+    expect(optimistic.payments[1]).toEqual(payment);
+  });
+
+  it("sets status to Released when funded >= total", async () => {
+    const { getOptimisticInvoice } = await import("../src/optimistic.js");
+    const invoice = {
+      id: "1",
+      creator: "GABC",
+      recipients: [{ address: "GDEF", amount: 100n }],
+      token: "CUSDC",
+      deadline: 1000000,
+      funded: 70n,
+      status: "Pending" as const,
+      payments: [],
+    };
+    const payment = { payer: "GPAYER", amount: 30n };
+    const optimistic = getOptimisticInvoice(invoice, payment);
+    expect(optimistic.status).toBe("Released");
+  });
+
+  it("does not mutate input invoice", async () => {
+    const { getOptimisticInvoice } = await import("../src/optimistic.js");
+    const invoice = {
+      id: "1",
+      creator: "GABC",
+      recipients: [{ address: "GDEF", amount: 100n }],
+      token: "CUSDC",
+      deadline: 1000000,
+      funded: 50n,
+      status: "Pending" as const,
+      payments: [],
+    };
+    const payment = { payer: "GPAYER", amount: 30n };
+    getOptimisticInvoice(invoice, payment);
+    expect(invoice.funded).toBe(50n);
+    expect(invoice.payments).toHaveLength(0);
+    expect(invoice.status).toBe("Pending");
+  });
+
+  it("returns new object", async () => {
+    const { getOptimisticInvoice } = await import("../src/optimistic.js");
+    const invoice = {
+      id: "1",
+      creator: "GABC",
+      recipients: [{ address: "GDEF", amount: 100n }],
+      token: "CUSDC",
+      deadline: 1000000,
+      funded: 50n,
+      status: "Pending" as const,
+      payments: [],
+    };
+    const payment = { payer: "GPAYER", amount: 30n };
+    const optimistic = getOptimisticInvoice(invoice, payment);
+    expect(optimistic).not.toBe(invoice);
+  });
+});
