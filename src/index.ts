@@ -29,6 +29,8 @@ export { resolveToken } from "./token.js";
 
 export { watchExpiry } from "./watcher.js";
 
+export { generatePaymentProof } from "./proof.js";
+
 export {
   formatAmount,
   parseAmount,
@@ -83,6 +85,7 @@ export type {
   TokenInfo,
   ExpiryEvent,
   ExpiryCallback,
+  PaymentProof,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
 

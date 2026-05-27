@@ -250,3 +250,19 @@ export interface ExpiryEvent {
 
 /** Callback function for expiry events. */
 export type ExpiryCallback = (event: ExpiryEvent) => void;
+
+/** Cryptographic proof of a payment. */
+export interface PaymentProof {
+  /** Transaction hash. */
+  txHash: string;
+  /** Payer's Stellar address. */
+  payer: string;
+  /** Invoice ID. */
+  invoiceId: string;
+  /** Amount paid in stroops. */
+  amount: bigint;
+  /** Ledger sequence number. */
+  ledger: number;
+  /** SHA-256 hash of proof fields. */
+  proofHash: string;
+}

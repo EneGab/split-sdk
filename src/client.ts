@@ -26,6 +26,7 @@ import {
 } from "./interceptors.js";
 import { calculateFee } from "./fee.js";
 import { resolveToken } from "./token.js";
+import { generatePaymentProof } from "./proof.js";
 import type {
   ApprovalResult,
   BatchPayment,
@@ -41,6 +42,7 @@ import type {
   PaginationOptions,
   Payment,
   PayParams,
+  PaymentProof,
   Recipient,
   InvoiceTemplate,
   RPCHealth,
@@ -754,6 +756,16 @@ export class StellarSplitClient {
    */
   async resolveToken(address: string): Promise<TokenInfo> {
     return resolveToken(address, this.config);
+  }
+
+  /**
+   * Generate a cryptographic proof of payment.
+   *
+   * @param txHash - Transaction hash
+   * @returns Payment proof with deterministic SHA-256 hash
+   */
+  async generatePaymentProof(txHash: string): Promise<PaymentProof> {
+    return generatePaymentProof(txHash, this.config);
   }
 
   // ---------------------------------------------------------------------------
