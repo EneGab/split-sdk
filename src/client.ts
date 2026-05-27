@@ -226,6 +226,90 @@ export class StellarSplitClient {
     return Array.isArray(templates) ? templates : [];
   }
 
+  /**
+   * Get all recurring invoices for a creator.
+   */
+  async getRecurringInvoices(creator: string): Promise<Invoice[]> {
+    const invoices = await this.getInvoicesByCreator(creator);
+    return invoices.filter((inv) => inv.recurring === true);
+  }
+
+  /**
+   * Cancel a recurring invoice.
+   *
+   * @returns The transaction hash.
+   */
+  async cancelRecurring(invoiceId: string, creator: string): Promise<TxResult> {
+    const operation = this.contract.call(
+      "cancel_invoice",
+      nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+      nativeToScVal(creator, { type: "address" })
+    );
+
+    const result = await this._submitTx(creator, operation);
+    return { txHash: result.txHash };
+  }
+
+  /**
+   * Update amounts for a recurring invoice.
+   *
+   * @returns The transaction hash.
+   */
+  async updateRecurringAmount(
+    invoiceId: string,
+    creator: string,
+    amounts: bigint[]
+  ): Promise<TxResult> {
+    const amountVals = amounts.map((a) => nativeToScVal(a, { type: "i128" }));
+
+    const operation = this.contract.call(
+      "update_recurring_amount",
+      nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+      nativeToScVal(creator, { type: "address" }),
+      xdr.ScVal.scvVec(amountVals)
+    );
+
+    const result = await this._submitTx(creator, operation);
+    return { txHash: result.txHash };
+  }
+
+  /**
+   * Get all invoices created by an address.
+   */
+  private async getInvoicesByCreator(creator: string): Promise<Invoice[]> {
+    const operation = this.contract.call(
+      "get_invoices_by_creator",
+      nativeToScVal(creator, { type: "address" })
+    );
+
+    const account = await this.server.getAccount(this.config.contractId).catch(() => null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sourceAccount = account ?? ({ accountId: () => this.config.contractId, sequenceNumber: () => "0", incrementSequenceNumber: () => {} } as any);
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(30)
+      .build();
+
+    const simResult = await this.server.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+    if (!returnVal) throw new Error("No return value from get_invoices_by_creator");
+
+    const invoices = scValToNative(returnVal);
+    if (!Array.isArray(invoices)) return [];
+
+    return invoices.map((inv: Record<string, unknown>, idx: number) =>
+      this._parseInvoice(idx.toString(), inv)
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
@@ -320,6 +404,7 @@ export class StellarSplitClient {
       funded: BigInt(raw.funded as string | number),
       status: statusMap[raw.status as string] ?? "Pending",
       payments,
+      recurring: raw.recurring as boolean | undefined,
     };
   }
 }

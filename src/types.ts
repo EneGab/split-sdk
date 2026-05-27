@@ -35,6 +35,8 @@ export interface Invoice {
   status: InvoiceStatus;
   /** All payments recorded on-chain. */
   payments: Payment[];
+  /** Whether this is a recurring invoice. */
+  recurring?: boolean;
 }
 
 /** Parameters for creating an invoice. */
