@@ -23,6 +23,8 @@ export { getOptimisticInvoice } from "./optimistic.js";
 
 export { watchContractUpgrade } from "./upgrade.js";
 
+export { calculateFee } from "./fee.js";
+
 export {
   formatAmount,
   parseAmount,
@@ -73,6 +75,7 @@ export type {
   SimulatePayResult,
   InvoiceDiff,
   SDKHealth,
+  FeeBreakdown,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
 

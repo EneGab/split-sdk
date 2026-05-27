@@ -173,16 +173,6 @@ export interface RPCHealth {
   timestamp: number;
 }
 
-/** Vesting schedule for an invoice with cliff and drip. */
-export interface VestingSchedule {
-  /** Unix timestamp of the cliff date. */
-  cliffDate: number;
-  /** Unix timestamp when fully vested. */
-  fullyVestedDate: number;
-  /** Returns the claimable amount at a given Unix timestamp. */
-  claimableAt(timestamp: number): bigint;
-}
-
 /** Event emitted when a contract WASM upgrade is detected. */
 export interface UpgradeEvent {
   previousHash: string;
@@ -220,4 +210,16 @@ export interface SimulateCreateInvoiceResult {
 export interface SimulatePayResult {
   /** Estimated fee in stroops. */
   fee: string;
+}
+
+/** Fee breakdown for a payment amount. */
+export interface FeeBreakdown {
+  /** Gross amount before fee deduction. */
+  gross: bigint;
+  /** Protocol fee amount. */
+  fee: bigint;
+  /** Net amount recipient receives. */
+  net: bigint;
+  /** Fee basis points (1 bps = 0.01%). */
+  feeBps: number;
 }
