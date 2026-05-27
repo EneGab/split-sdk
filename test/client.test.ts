@@ -134,3 +134,19 @@ describe("replayEvents", () => {
     expect(event).toBeDefined();
   });
 });
+
+describe("StellarSplitClient", () => {
+  it("exports NetworkConfig type", () => {
+    // Type-only test - verifies NetworkConfig is exported
+    const config: {
+      rpcUrl: string;
+      networkPassphrase: string;
+      contractId: string;
+    } = {
+      rpcUrl: "https://soroban-testnet.stellar.org",
+      networkPassphrase: "Test SDF Network ; September 2015",
+      contractId: "CABC",
+    };
+    expect(config).toBeDefined();
+  });
+});

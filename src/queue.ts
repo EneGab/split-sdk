@@ -2,6 +2,7 @@ import {
   TransactionBuilder,
   BASE_FEE,
   rpc as SorobanRpc,
+  Account,
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "./wallet.js";
 import type { TxResult } from "./client.js";
@@ -32,7 +33,7 @@ export class TxQueue {
    */
   async enqueue(
     operation: (
-      account: SorobanRpc.Account
+      account: Account
     ) => Promise<{ txHash: string; returnValue: unknown }>
   ): Promise<TxResult> {
     if (this.failed) {

@@ -71,12 +71,18 @@ function parseContractEvent(
   const invoiceId = extractInvoiceId(event);
   if (!invoiceId) return null;
 
+  const eventData = event as unknown as Record<string, unknown>;
+  const createdAt = eventData.createdAt as string | undefined;
+  const timestamp = createdAt
+    ? Math.floor(new Date(createdAt).getTime() / 1000)
+    : Math.floor(Date.now() / 1000);
+
   return {
     type: eventType,
     invoiceId,
     data: event.value,
     ledger: event.ledger,
-    timestamp: Math.floor(new Date(event.createdAt).getTime() / 1000),
+    timestamp,
   };
 }
 
