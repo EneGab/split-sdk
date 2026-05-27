@@ -61,3 +61,20 @@ export interface PayParams {
 
 /** Export format for invoices. */
 export type ExportFormat = "json" | "csv" | "text";
+
+/** Type of contract event. */
+export type ContractEventType = "created" | "payment" | "released" | "refunded";
+
+/** A Soroban contract event. */
+export interface ContractEvent {
+  /** Event type. */
+  type: ContractEventType;
+  /** Invoice ID associated with the event. */
+  invoiceId: string;
+  /** Event data. */
+  data: unknown;
+  /** Ledger sequence number. */
+  ledger: number;
+  /** Unix timestamp of the event. */
+  timestamp: number;
+}

@@ -9,6 +9,8 @@ export { TxQueue } from "./queue.js";
 
 export { exportInvoice } from "./export.js";
 
+export { replayEvents } from "./events.js";
+
 export { connectWallet, getPublicKey, signTransaction } from "./wallet.js";
 
 export {
@@ -28,4 +30,6 @@ export type {
   CreateInvoiceParams,
   PayParams,
   ExportFormat,
+  ContractEvent,
+  ContractEventType,
 } from "./types.js";
