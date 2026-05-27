@@ -16,6 +16,8 @@ export {
   truncateAddress,
 } from "./utils.js";
 
+export { pollUSDCBalance, initPoller } from "./poller.js";
+
 export type {
   Invoice,
   Payment,
