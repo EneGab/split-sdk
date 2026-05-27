@@ -16,6 +16,11 @@ export {
   truncateAddress,
 } from "./utils.js";
 
+export { searchInvoices } from "./search.js";
+export type { SearchQuery, SearchResult } from "./search.js";
+
+export { calculateVesting } from "./vesting.js";
+
 export type {
   Invoice,
   Payment,
@@ -23,4 +28,6 @@ export type {
   InvoiceStatus,
   CreateInvoiceParams,
   PayParams,
+  InvoiceGroup,
+  VestingSchedule,
 } from "./types.js";

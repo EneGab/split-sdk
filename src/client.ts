@@ -17,6 +17,7 @@ import { signTransaction } from "./wallet.js";
 import type {
   CreateInvoiceParams,
   Invoice,
+  InvoiceGroup,
   InvoiceStatus,
   Payment,
   PayParams,
@@ -139,6 +140,83 @@ export class StellarSplitClient {
   async getPayments(invoiceId: string): Promise<Payment[]> {
     const invoice = await this.getInvoice(invoiceId);
     return invoice.payments;
+  }
+
+  /**
+   * Create a group of linked invoices.
+   *
+   * @returns The new group ID and transaction hash.
+   */
+  async createGroup(
+    creator: string,
+    invoiceIds: string[]
+  ): Promise<{ groupId: string; txHash: string }> {
+    const invoiceIdsBigInt = invoiceIds.map((id) =>
+      nativeToScVal(BigInt(id), { type: "u64" })
+    );
+
+    const operation = this.contract.call(
+      "create_invoice_group",
+      nativeToScVal(creator, { type: "address" }),
+      xdr.ScVal.scvVec(invoiceIdsBigInt)
+    );
+
+    const result = await this._submitTx(creator, operation);
+    const groupId = scValToNative(result.returnValue).toString();
+    return { groupId, txHash: result.txHash };
+  }
+
+  /**
+   * Get the status of an invoice group.
+   */
+  async getGroupStatus(groupId: string): Promise<InvoiceGroup> {
+    const operation = this.contract.call(
+      "get_invoice_group",
+      nativeToScVal(BigInt(groupId), { type: "u64" })
+    );
+
+    const account = await this.server.getAccount(this.config.contractId).catch(() => null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sourceAccount = account ?? ({ accountId: () => this.config.contractId, sequenceNumber: () => "0", incrementSequenceNumber: () => {} } as any);
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(30)
+      .build();
+
+    const simResult = await this.server.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+    if (!returnVal) throw new Error("No return value from get_invoice_group");
+
+    const raw = scValToNative(returnVal) as Record<string, unknown>;
+    return {
+      groupId,
+      invoiceIds: (raw.invoiceIds as (string | number)[]).map((id) => String(id)),
+      allFunded: Boolean(raw.allFunded),
+    };
+  }
+
+  /**
+   * Release all invoices in a group.
+   *
+   * @returns The transaction hash.
+   */
+  async releaseGroup(creator: string, groupId: string): Promise<TxResult> {
+    const operation = this.contract.call(
+      "release_invoice_group",
+      nativeToScVal(creator, { type: "address" }),
+      nativeToScVal(BigInt(groupId), { type: "u64" })
+    );
+
+    const result = await this._submitTx(creator, operation);
+    return { txHash: result.txHash };
   }
 
   // ---------------------------------------------------------------------------
