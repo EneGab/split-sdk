@@ -5,6 +5,7 @@
  */
 
 import {
+  Address,
   Contract,
   rpc as SorobanRpc,
   TransactionBuilder,
@@ -17,6 +18,7 @@ import { signTransaction } from "./wallet.js";
 import { telemetry } from "./telemetry.js";
 import { checkRPCHealth } from "./health.js";
 import type {
+  ApprovalResult,
   CreateInvoiceParams,
   Invoice,
   InvoiceGroup,
@@ -43,6 +45,10 @@ export interface StellarSplitClientConfig {
     endpoint: string;
     optOut?: boolean;
   };
+  /** Fee multiplier applied when a transaction is stuck (default: 2). */
+  feeBumpMultiplier?: number;
+  /** Optional wallet adapter for signing (e.g. WalletConnect). Defaults to Freighter. */
+  adapter?: WalletAdapter;
 }
 
 /** Network configuration. */
@@ -607,6 +613,42 @@ export class StellarSplitClient {
     this.contract = new Contract(config.contractId);
   }
 
+  /**
+   * Get all invoices where an address is a recipient.
+   */
+  private async getInvoicesByRecipient(recipient: string): Promise<Invoice[]> {
+    const operation = this.contract.call(
+      "get_invoices_by_recipient",
+      nativeToScVal(recipient, { type: "address" })
+    );
+
+    const account = await this.server.getAccount(this.config.contractId).catch(() => null);
+    const sourceAccount = account ?? ({ accountId: () => this.config.contractId, sequenceNumber: () => "0", incrementSequenceNumber: () => {} } as { accountId: () => string; sequenceNumber: () => string; incrementSequenceNumber: () => void });
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(30)
+      .build();
+
+    const simResult = await this.server.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+    if (!returnVal) return [];
+
+    const invoices = scValToNative(returnVal);
+    if (!Array.isArray(invoices)) return [];
+
+    return invoices.map((inv: Record<string, unknown>, idx: number) =>
+      this._parseInvoice(idx.toString(), inv)
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
@@ -632,10 +674,9 @@ export class StellarSplitClient {
     }
 
     const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
-    const signedXdr = await signTransaction(
-      preparedTx.toXDR(),
-      this.config.networkPassphrase
-    );
+    const signedXdr = await (this.config.adapter
+      ? this.config.adapter.signTransaction(preparedTx.toXDR(), this.config.networkPassphrase)
+      : signTransaction(preparedTx.toXDR(), this.config.networkPassphrase));
 
     const sendResult = await this.server.sendTransaction(
       TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase)
@@ -655,6 +696,49 @@ export class StellarSplitClient {
       await new Promise((r) => setTimeout(r, 1500));
       getResult = await this.server.getTransaction(txHash);
       attempts++;
+    }
+
+    // If still not confirmed, submit a fee-bump transaction with a higher fee
+    if (getResult.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND) {
+      const multiplier = this.config.feeBumpMultiplier ?? 2;
+      const innerTx = TransactionBuilder.fromXDR(
+        signedXdr,
+        this.config.networkPassphrase
+      ) as Parameters<typeof TransactionBuilder.buildFeeBumpTransaction>[2];
+      const bumpedFee = String(Math.ceil(Number(BASE_FEE) * multiplier));
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        sourceAddress,
+        bumpedFee,
+        innerTx,
+        this.config.networkPassphrase
+      );
+      const signedBumpXdr = await (this.config.adapter
+        ? this.config.adapter.signTransaction(feeBumpTx.toXDR(), this.config.networkPassphrase)
+        : signTransaction(feeBumpTx.toXDR(), this.config.networkPassphrase));
+      const bumpSendResult = await this.server.sendTransaction(
+        TransactionBuilder.fromXDR(signedBumpXdr, this.config.networkPassphrase)
+      );
+      if (bumpSendResult.status === "ERROR") {
+        throw new Error(`Fee-bump transaction failed: ${JSON.stringify(bumpSendResult.errorResult)}`);
+      }
+      const bumpHash = bumpSendResult.hash;
+      let bumpResult = await this.server.getTransaction(bumpHash);
+      let bumpAttempts = 0;
+      while (
+        bumpResult.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+        bumpAttempts < 20
+      ) {
+        await new Promise((r) => setTimeout(r, 1500));
+        bumpResult = await this.server.getTransaction(bumpHash);
+        bumpAttempts++;
+      }
+      if (bumpResult.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+        throw new Error(`Fee-bump transaction not confirmed: ${bumpResult.status}`);
+      }
+      const bumpReturnValue =
+        (bumpResult as SorobanRpc.Api.GetSuccessfulTransactionResponse).returnValue ??
+        xdr.ScVal.scvVoid();
+      return { txHash: bumpHash, returnValue: bumpReturnValue };
     }
 
     if (getResult.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
