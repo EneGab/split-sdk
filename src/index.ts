@@ -3,7 +3,7 @@
  */
 
 export { StellarSplitClient } from "./client.js";
-export type { StellarSplitClientConfig, TxResult } from "./client.js";
+export type { StellarSplitClientConfig, TxResult, StellarSplitPlugin } from "./client.js";
 
 export { connectWallet, getPublicKey, signTransaction } from "./wallet.js";
 

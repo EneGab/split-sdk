@@ -166,3 +166,47 @@ describe("telemetry", () => {
     expect(true).toBe(true);
   });
 });
+
+import { StellarSplitClient } from "../src/client.js";
+import type { StellarSplitPlugin } from "../src/client.js";
+
+describe("registerPlugin", () => {
+  function makeClient(): StellarSplitClient {
+    return new StellarSplitClient({
+      rpcUrl: "https://soroban-testnet.stellar.org",
+      networkPassphrase: "Test SDF Network ; September 2015",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    });
+  }
+
+  it("installs a plugin and exposes its method on the client", () => {
+    const client = makeClient();
+    const plugin: StellarSplitPlugin = {
+      name: "hello",
+      install(c) {
+        (c as unknown as Record<string, unknown>).sayHello = () => "hello";
+      },
+    };
+    client.registerPlugin(plugin);
+    expect((client as unknown as Record<string, unknown>).sayHello?.()).toBe("hello");
+  });
+
+  it("throws when the same plugin is registered twice", () => {
+    const client = makeClient();
+    const plugin: StellarSplitPlugin = { name: "dup", install() {} };
+    client.registerPlugin(plugin);
+    expect(() => client.registerPlugin(plugin)).toThrow(
+      'Plugin "dup" is already registered.'
+    );
+  });
+
+  it("allows multiple distinct plugins", () => {
+    const client = makeClient();
+    const a: StellarSplitPlugin = { name: "a", install(c) { (c as unknown as Record<string, unknown>).fromA = true; } };
+    const b: StellarSplitPlugin = { name: "b", install(c) { (c as unknown as Record<string, unknown>).fromB = true; } };
+    client.registerPlugin(a);
+    client.registerPlugin(b);
+    expect((client as unknown as Record<string, unknown>).fromA).toBe(true);
+    expect((client as unknown as Record<string, unknown>).fromB).toBe(true);
+  });
+});
