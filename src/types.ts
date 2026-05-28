@@ -51,6 +51,20 @@ export interface CreateInvoiceParams {
   deadline: number;
 }
 
+/** Generic hardware/software wallet adapter interface. */
+export interface WalletAdapter {
+  /** Return the Stellar public key (G... address) from the device. */
+  getAddress(): Promise<string>;
+  /**
+   * Sign a Stellar transaction XDR string.
+   *
+   * @param xdr     - Base64-encoded transaction XDR.
+   * @param network - Network passphrase.
+   * @returns Signed transaction XDR.
+   */
+  signTransaction(xdr: string, network: string): Promise<string>;
+}
+
 /** Parameters for paying toward an invoice. */
 export interface PayParams {
   /** Stellar address of the payer (must sign). */
@@ -61,6 +75,28 @@ export interface PayParams {
   amount: bigint;
 }
 
+/** Options for paginated queries. */
+export interface PaginationOptions {
+  /** Cursor (invoice ID) to start after. */
+  cursor?: string;
+  /** Maximum number of items to return. Defaults to 20. */
+  limit?: number;
+}
+
+/** A page of results with a cursor for the next page. */
+export interface PaginatedResult<T> {
+  items: T[];
+  nextCursor: string | null;
+  total: number;
+}
+
+/** A group of linked invoices. */
+export interface InvoiceGroup {
+  groupId: string;
+  invoiceIds: string[];
+  allFunded: boolean;
+}
+
 /** An invoice template for reuse. */
 export interface InvoiceTemplate {
   /** Template name. */
@@ -69,4 +105,19 @@ export interface InvoiceTemplate {
   recipients: Recipient[];
   /** USDC token contract address. */
   token: string;
+}
+
+/** Health status of the RPC endpoint. */
+export interface RPCHealth {
+  status: "ok" | "degraded" | "down";
+  latencyMs: number;
+  blockHeight: number;
+  timestamp: number;
+}
+
+/** Event emitted when a contract WASM upgrade is detected. */
+export interface UpgradeEvent {
+  previousHash: string;
+  newHash: string;
+  detectedAt: number;
 }
