@@ -7,6 +7,12 @@ export type { StellarSplitClientConfig, TxResult } from "./client.js";
 
 export { connectWallet, getPublicKey, signTransaction } from "./wallet.js";
 
+export { checkRPCHealth } from "./health.js";
+
+export { getOptimisticInvoice } from "./optimistic.js";
+
+export { watchContractUpgrade } from "./upgrade.js";
+
 export {
   formatAmount,
   parseAmount,

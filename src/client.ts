@@ -127,6 +127,65 @@ export class StellarSplitClient {
   }
 
   /**
+   * Create multiple invoices in a single transaction.
+   *
+   * @param params - Array of invoice creation parameters (1-5 items)
+   * @returns All created invoice IDs and the transaction hash
+   */
+  async batchCreateInvoices(
+    params: CreateInvoiceParams[]
+  ): Promise<{ invoiceIds: string[]; txHash: string }> {
+    if (params.length === 0 || params.length > 5) {
+      throw new Error("Batch size must be between 1 and 5 items");
+    }
+
+    const invoiceParams = params.map((p) => {
+      const recipientAddresses = p.recipients.map((r) =>
+        nativeToScVal(r.address, { type: "address" })
+      );
+      const recipientAmounts = p.recipients.map((r) =>
+        nativeToScVal(r.amount, { type: "i128" })
+      );
+
+      const mapEntries: xdr.ScMapEntry[] = [
+        new xdr.ScMapEntry({
+          key: nativeToScVal("creator", { type: "symbol" }) as xdr.ScVal,
+          val: nativeToScVal(p.creator, { type: "address" }) as xdr.ScVal,
+        }),
+        new xdr.ScMapEntry({
+          key: nativeToScVal("recipients", { type: "symbol" }) as xdr.ScVal,
+          val: xdr.ScVal.scvVec(recipientAddresses),
+        }),
+        new xdr.ScMapEntry({
+          key: nativeToScVal("amounts", { type: "symbol" }) as xdr.ScVal,
+          val: xdr.ScVal.scvVec(recipientAmounts),
+        }),
+        new xdr.ScMapEntry({
+          key: nativeToScVal("token", { type: "symbol" }) as xdr.ScVal,
+          val: nativeToScVal(p.token, { type: "address" }) as xdr.ScVal,
+        }),
+        new xdr.ScMapEntry({
+          key: nativeToScVal("deadline", { type: "symbol" }) as xdr.ScVal,
+          val: nativeToScVal(p.deadline, { type: "u64" }) as xdr.ScVal,
+        }),
+      ];
+
+      return xdr.ScVal.scvMap(mapEntries);
+    });
+
+    const operation = this.contract.call(
+      "create_batch",
+      xdr.ScVal.scvVec(invoiceParams)
+    );
+
+    const result = await this._submitTx(params[0].creator, operation);
+    const invoiceIds = (scValToNative(result.returnValue) as (string | number)[]).map(
+      (id) => id.toString()
+    );
+    return { invoiceIds, txHash: result.txHash };
+  }
+
+  /**
    * Fetch an invoice by ID.
    */
   async getInvoice(invoiceId: string): Promise<Invoice> {
@@ -391,6 +450,13 @@ export class StellarSplitClient {
     return invoices.map((inv: Record<string, unknown>, idx: number) =>
       this._parseInvoice(idx.toString(), inv)
     );
+  }
+
+  /**
+   * Check the health of the RPC endpoint.
+   */
+  async checkRPCHealth(): Promise<RPCHealth> {
+    return checkRPCHealth(this.server);
   }
 
   // ---------------------------------------------------------------------------
