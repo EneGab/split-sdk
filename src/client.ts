@@ -26,6 +26,14 @@ import type {
   InvoiceTemplate,
 } from "./types.js";
 
+/** Thrown when a source invoice does not exist on-chain. */
+export class InvoiceNotFoundError extends Error {
+  constructor(invoiceId: string) {
+    super(`Invoice not found: ${invoiceId}`);
+    this.name = "InvoiceNotFoundError";
+  }
+}
+
 /** Configuration for StellarSplitClient. */
 export interface StellarSplitClientConfig {
   /** Soroban RPC endpoint URL. */
@@ -123,6 +131,41 @@ export class StellarSplitClient {
       return { invoiceId, txHash: result.txHash };
     } catch (error) {
       telemetry.recordMethod("createInvoice", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Clone an existing invoice with a new deadline.
+   *
+   * @param sourceId    - ID of the invoice to clone.
+   * @param creator     - Address of the creator (must sign).
+   * @param newDeadline - Unix timestamp for the new invoice's deadline.
+   * @returns The new invoice ID and transaction hash.
+   * @throws {InvoiceNotFoundError} If the source invoice does not exist.
+   */
+  async cloneInvoice(
+    sourceId: string,
+    creator: string,
+    newDeadline: number
+  ): Promise<{ invoiceId: string; txHash: string }> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "clone_invoice",
+        nativeToScVal(BigInt(sourceId), { type: "u64" }),
+        nativeToScVal(newDeadline, { type: "u64" })
+      );
+
+      const result = await this._submitTx(creator, operation);
+      const invoiceId = scValToNative(result.returnValue).toString();
+      telemetry.recordMethod("cloneInvoice", true, Date.now() - startTime);
+      return { invoiceId, txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("cloneInvoice", false, Date.now() - startTime);
+      if (error instanceof Error && error.message.includes("not found")) {
+        throw new InvoiceNotFoundError(sourceId);
+      }
       throw error;
     }
   }
