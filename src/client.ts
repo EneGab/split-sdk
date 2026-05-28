@@ -75,6 +75,7 @@ import type { DisputeResult, ArbiterVote } from "./types.js";
  */
 
 import {
+  Address,
   Contract,
   rpc as SorobanRpc,
   TransactionBuilder,
@@ -85,23 +86,28 @@ import {
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "./wallet.js";
 import { telemetry } from "./telemetry.js";
+import { checkRPCHealth } from "./health.js";
 import type {
+  ApprovalResult,
   CreateInvoiceParams,
   Invoice,
   InvoiceGroup,
   InvoiceStatus,
+  PaginatedResult,
+  PaginationOptions,
   Payment,
   PayParams,
   Recipient,
   InvoiceTemplate,
+  RPCHealth,
 } from "./types.js";
 
-/** Thrown when a source invoice does not exist on-chain. */
-export class InvoiceNotFoundError extends Error {
-  constructor(invoiceId: string) {
-    super(`Invoice not found: ${invoiceId}`);
-    this.name = "InvoiceNotFoundError";
-  }
+/** A plugin that extends StellarSplitClient with new methods at runtime. */
+export interface StellarSplitPlugin {
+  /** Unique plugin name — duplicate registrations throw. */
+  name: string;
+  /** Called with the client instance; attach new methods here. */
+  install(client: StellarSplitClient): void;
 }
 
 /** Configuration for StellarSplitClient. */
@@ -117,6 +123,10 @@ export interface StellarSplitClientConfig {
     endpoint: string;
     optOut?: boolean;
   };
+  /** Fee multiplier applied when a transaction is stuck (default: 2). */
+  feeBumpMultiplier?: number;
+  /** Optional wallet adapter for signing (e.g. WalletConnect). Defaults to Freighter. */
+  adapter?: WalletAdapter;
 }
 
 /** Network configuration. */
@@ -152,6 +162,7 @@ export class StellarSplitClient {
   private server: SorobanRpc.Server;
   private contract: Contract;
   private config: StellarSplitClientConfig;
+  private _plugins = new Set<string>();
 
   constructor(config: StellarSplitClientConfig) {
     this.config = config;
@@ -163,6 +174,22 @@ export class StellarSplitClient {
     if (config.telemetry) {
       telemetry.init(config.telemetry);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Plugin system
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Register a plugin that extends this client instance.
+   * Throws if a plugin with the same name has already been registered.
+   */
+  registerPlugin(plugin: StellarSplitPlugin): void {
+    if (this._plugins.has(plugin.name)) {
+      throw new Error(`Plugin "${plugin.name}" is already registered.`);
+    }
+    this._plugins.add(plugin.name);
+    plugin.install(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -490,7 +517,8 @@ export class StellarSplitClient {
   async getRecurringInvoices(creator: string): Promise<Invoice[]> {
     const startTime = Date.now();
     try {
-      const invoices = await this.getInvoicesByCreator(creator);
+      const page = await this.getInvoicesByCreator(creator);
+      const invoices = await Promise.all(page.items.map((id) => this.getInvoice(id)));
       const recurring = invoices.filter((inv) => inv.recurring === true);
       telemetry.recordMethod("getRecurringInvoices", true, Date.now() - startTime);
       return recurring;
@@ -554,9 +582,18 @@ export class StellarSplitClient {
   }
 
   /**
-   * Get all invoices created by an address.
+   * Get invoices created by an address, with cursor-based pagination.
+   *
+   * @param creator - Stellar address of the creator.
+   * @param options - Optional pagination options (cursor, limit). Default page size is 20.
+   * @returns A page of invoice IDs with a nextCursor for subsequent pages.
    */
-  private async getInvoicesByCreator(creator: string): Promise<Invoice[]> {
+  async getInvoicesByCreator(
+    creator: string,
+    options: PaginationOptions = {}
+  ): Promise<PaginatedResult<string>> {
+    const limit = options.limit ?? 20;
+
     const operation = this.contract.call(
       "get_invoices_by_creator",
       nativeToScVal(creator, { type: "address" })
@@ -582,12 +619,19 @@ export class StellarSplitClient {
     const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
     if (!returnVal) throw new Error("No return value from get_invoices_by_creator");
 
-    const invoices = scValToNative(returnVal);
-    if (!Array.isArray(invoices)) return [];
+    const raw = scValToNative(returnVal);
+    const allIds: string[] = Array.isArray(raw)
+      ? raw.map((id: unknown) => String(id))
+      : [];
 
-    return invoices.map((inv: Record<string, unknown>, idx: number) =>
-      this._parseInvoice(idx.toString(), inv)
-    );
+    const total = allIds.length;
+    const startIndex = options.cursor
+      ? allIds.indexOf(options.cursor) + 1
+      : 0;
+    const page = allIds.slice(startIndex, startIndex + limit);
+    const nextCursor = startIndex + limit < total ? page[page.length - 1] : null;
+
+    return { items: page, nextCursor, total };
   }
 
   /**
@@ -699,6 +743,42 @@ export class StellarSplitClient {
     this.contract = new Contract(config.contractId);
   }
 
+  /**
+   * Get all invoices where an address is a recipient.
+   */
+  private async getInvoicesByRecipient(recipient: string): Promise<Invoice[]> {
+    const operation = this.contract.call(
+      "get_invoices_by_recipient",
+      nativeToScVal(recipient, { type: "address" })
+    );
+
+    const account = await this.server.getAccount(this.config.contractId).catch(() => null);
+    const sourceAccount = account ?? ({ accountId: () => this.config.contractId, sequenceNumber: () => "0", incrementSequenceNumber: () => {} } as { accountId: () => string; sequenceNumber: () => string; incrementSequenceNumber: () => void });
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.config.networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(30)
+      .build();
+
+    const simResult = await this.server.simulateTransaction(tx);
+    if (SorobanRpc.Api.isSimulationError(simResult)) {
+      throw new Error(`Simulation failed: ${simResult.error}`);
+    }
+
+    const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+    if (!returnVal) return [];
+
+    const invoices = scValToNative(returnVal);
+    if (!Array.isArray(invoices)) return [];
+
+    return invoices.map((inv: Record<string, unknown>, idx: number) =>
+      this._parseInvoice(idx.toString(), inv)
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
@@ -724,10 +804,9 @@ export class StellarSplitClient {
     }
 
     const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
-    const signedXdr = await signTransaction(
-      preparedTx.toXDR(),
-      this.config.networkPassphrase
-    );
+    const signedXdr = await (this.config.adapter
+      ? this.config.adapter.signTransaction(preparedTx.toXDR(), this.config.networkPassphrase)
+      : signTransaction(preparedTx.toXDR(), this.config.networkPassphrase));
 
     const sendResult = await this.server.sendTransaction(
       TransactionBuilder.fromXDR(signedXdr, this.config.networkPassphrase)
@@ -747,6 +826,49 @@ export class StellarSplitClient {
       await new Promise((r) => setTimeout(r, 1500));
       getResult = await this.server.getTransaction(txHash);
       attempts++;
+    }
+
+    // If still not confirmed, submit a fee-bump transaction with a higher fee
+    if (getResult.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND) {
+      const multiplier = this.config.feeBumpMultiplier ?? 2;
+      const innerTx = TransactionBuilder.fromXDR(
+        signedXdr,
+        this.config.networkPassphrase
+      ) as Parameters<typeof TransactionBuilder.buildFeeBumpTransaction>[2];
+      const bumpedFee = String(Math.ceil(Number(BASE_FEE) * multiplier));
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        sourceAddress,
+        bumpedFee,
+        innerTx,
+        this.config.networkPassphrase
+      );
+      const signedBumpXdr = await (this.config.adapter
+        ? this.config.adapter.signTransaction(feeBumpTx.toXDR(), this.config.networkPassphrase)
+        : signTransaction(feeBumpTx.toXDR(), this.config.networkPassphrase));
+      const bumpSendResult = await this.server.sendTransaction(
+        TransactionBuilder.fromXDR(signedBumpXdr, this.config.networkPassphrase)
+      );
+      if (bumpSendResult.status === "ERROR") {
+        throw new Error(`Fee-bump transaction failed: ${JSON.stringify(bumpSendResult.errorResult)}`);
+      }
+      const bumpHash = bumpSendResult.hash;
+      let bumpResult = await this.server.getTransaction(bumpHash);
+      let bumpAttempts = 0;
+      while (
+        bumpResult.status === SorobanRpc.Api.GetTransactionStatus.NOT_FOUND &&
+        bumpAttempts < 20
+      ) {
+        await new Promise((r) => setTimeout(r, 1500));
+        bumpResult = await this.server.getTransaction(bumpHash);
+        bumpAttempts++;
+      }
+      if (bumpResult.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+        throw new Error(`Fee-bump transaction not confirmed: ${bumpResult.status}`);
+      }
+      const bumpReturnValue =
+        (bumpResult as SorobanRpc.Api.GetSuccessfulTransactionResponse).returnValue ??
+        xdr.ScVal.scvVoid();
+      return { txHash: bumpHash, returnValue: bumpReturnValue };
     }
 
     if (getResult.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
