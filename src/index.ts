@@ -20,6 +20,8 @@ export { pollUSDCBalance, initPoller } from "./poller.js";
 
 export { telemetry } from "./telemetry.js";
 
+export { generateGraphQLSchema } from "./graphql.js";
+
 export type {
   Invoice,
   Payment,

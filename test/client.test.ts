@@ -166,3 +166,25 @@ describe("telemetry", () => {
     expect(true).toBe(true);
   });
 });
+
+import { buildSchema } from "graphql";
+import { generateGraphQLSchema } from "../src/graphql.js";
+
+describe("generateGraphQLSchema", () => {
+  it("returns a string containing Invoice, Payment, Recipient types", () => {
+    const schema = generateGraphQLSchema();
+    expect(schema).toContain("type Invoice");
+    expect(schema).toContain("type Payment");
+    expect(schema).toContain("type Recipient");
+  });
+
+  it("includes invoice(id) and invoicesByCreator(address) queries", () => {
+    const schema = generateGraphQLSchema();
+    expect(schema).toContain("invoice(id: String!)");
+    expect(schema).toContain("invoicesByCreator(address: String!)");
+  });
+
+  it("produces a valid GraphQL SDL that buildSchema() accepts", () => {
+    expect(() => buildSchema(generateGraphQLSchema())).not.toThrow();
+  });
+});
