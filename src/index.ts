@@ -54,6 +54,14 @@ export { diffInvoice } from "./diff.js";
 
 export { getSDKHealth, resetSDKHealth } from "./healthDashboard.js";
 
+export { trackMemoryUsage, registerCacheEntry, unregisterCacheEntry, registerListener, unregisterListener } from "./memoryProfiler.js";
+
+export { resolveConflict } from "./conflictResolver.js";
+
+export { OperationQueue } from "./operationQueue.js";
+
+export { trackRelationships, initRelationshipTracker } from "./relationshipTracker.js";
+
 export type {
   Invoice,
   Payment,
@@ -68,10 +76,10 @@ export type {
   InvoiceEventCallbacks,
   SimulateCreateInvoiceResult,
   SimulatePayResult,
-} from "./types.js";
   InvoiceDiff,
   SDKHealth,
+  MemoryReport,
+  ConflictStrategy,
+  InvoiceRelationships,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
-
-export { LedgerAdapter } from "./adapters/ledger.js";

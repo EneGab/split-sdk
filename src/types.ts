@@ -95,6 +95,14 @@ export interface Invoice {
   payments: Payment[];
   /** Whether this is a recurring invoice. */
   recurring?: boolean;
+  /** Ledger sequence number of the last modification. */
+  lastModifiedLedger?: number;
+  /** ID of the invoice this was cloned from, if any. */
+  clonedFrom?: string;
+  /** Group ID this invoice belongs to, if any. */
+  groupId?: string | null;
+  /** IDs of prerequisite invoices that must be settled first. */
+  prerequisites?: string[];
 }
 
 /** Parameters for creating an invoice. */
@@ -220,4 +228,23 @@ export interface SimulateCreateInvoiceResult {
 export interface SimulatePayResult {
   /** Estimated fee in stroops. */
   fee: string;
+}
+
+/** Snapshot of the SDK's current memory footprint. */
+export interface MemoryReport {
+  cacheEntries: number;
+  listenerCount: number;
+  estimatedKB: number;
+  warnings: string[];
+}
+
+/** Strategy for resolving conflicts between local and remote invoice states. */
+export type ConflictStrategy = "remote-wins" | "local-wins" | "latest-ledger";
+
+/** Relationships associated with a given invoice. */
+export interface InvoiceRelationships {
+  invoiceId: string;
+  clones: string[];
+  groupId: string | null;
+  prerequisites: string[];
 }

@@ -664,7 +664,7 @@ export class StellarSplitClient {
     const total = allIds.length;
     const startIndex = options.cursor ? allIds.indexOf(options.cursor) + 1 : 0;
     const page = allIds.slice(startIndex, startIndex + limit);
-    const nextCursor = startIndex + limit < total ? page[page.length - 1] : null;
+    const nextCursor = startIndex + limit < total ? (page[page.length - 1] ?? null) : null;
 
     return { items: page, nextCursor, total };
   }
