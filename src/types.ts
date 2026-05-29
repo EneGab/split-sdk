@@ -164,6 +164,24 @@ export interface InvoiceGroup {
   allFunded: boolean;
 }
 
+/** Invoice receipt returned after a successful release. */
+export interface InvoiceReceipt {
+  /** Deterministic receipt identifier. */
+  receiptId: string;
+  /** Invoice ID this receipt belongs to. */
+  invoiceId: string;
+  /** Address that created the invoice. */
+  creator: string;
+  /** Ordered list of recipients with their owed amounts. */
+  recipients: Recipient[];
+  /** All payments recorded on-chain. */
+  payments: Payment[];
+  /** Total amount paid in stroops. */
+  totalAmount: bigint;
+  /** Timestamp when the receipt was generated. */
+  releasedAt: number;
+}
+
 /** An invoice template for reuse. */
 export interface InvoiceTemplate {
   /** Template name. */
