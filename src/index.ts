@@ -4,8 +4,6 @@
 
 export { StellarSplitClient } from "./client.js";
 export type { StellarSplitClientConfig, NetworkConfig, TxResult } from "./client.js";
-// Dispute management methods (for clarity, these are instance methods on StellarSplitClient)
-// Types exported below
 
 export { Deduplicator } from "./dedup.js";
 
@@ -68,10 +66,19 @@ export type {
   InvoiceEventCallbacks,
   SimulateCreateInvoiceResult,
   SimulatePayResult,
-} from "./types.js";
   InvoiceDiff,
   SDKHealth,
+  BatchResolveResult,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
 
-export { LedgerAdapter } from "./adapters/ledger.js";
+// Issue #82 — Connection pooling
+export { ConnectionPool } from "./connectionPool.js";
+
+// Issue #83 — Invoice snapshot
+export { snapshotInvoice } from "./snapshot.js";
+export type { InvoiceSnapshot } from "./snapshot.js";
+
+// Issue #84 — Audit logger
+export { AuditLogger } from "./auditLogger.js";
+export type { AuditEntry } from "./auditLogger.js";
