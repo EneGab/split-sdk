@@ -3,9 +3,7 @@
  */
 
 export { StellarSplitClient } from "./client.js";
-export type { StellarSplitClientConfig, NetworkConfig, TxResult } from "./client.js";
-// Dispute management methods (for clarity, these are instance methods on StellarSplitClient)
-// Types exported below
+export type { StellarSplitClientConfig, NetworkConfig, TxResult, StellarSplitPlugin } from "./client.js";
 
 export { Deduplicator } from "./dedup.js";
 
@@ -54,6 +52,16 @@ export { diffInvoice } from "./diff.js";
 
 export { getSDKHealth, resetSDKHealth } from "./healthDashboard.js";
 
+export { isFeatureEnabled } from "./flags.js";
+export type { FeatureFlags } from "./flags.js";
+
+export {
+  saveTemplate,
+  loadTemplate,
+  listTemplates,
+  deleteTemplate,
+} from "./templateManager.js";
+
 export type {
   Invoice,
   Payment,
@@ -68,10 +76,8 @@ export type {
   InvoiceEventCallbacks,
   SimulateCreateInvoiceResult,
   SimulatePayResult,
-} from "./types.js";
   InvoiceDiff,
   SDKHealth,
+  SyncResult,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
-
-export { LedgerAdapter } from "./adapters/ledger.js";

@@ -17,6 +17,8 @@ import {
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "./wallet.js";
 import { telemetry } from "./telemetry.js";
+import { isFeatureEnabled } from "./flags.js";
+import type { FeatureFlags } from "./flags.js";
 import { checkRPCHealth } from "./health.js";
 import { Deduplicator } from "./dedup.js";
 import { initHealthDashboard, recordCall } from "./healthDashboard.js";
@@ -44,6 +46,7 @@ import type {
   RPCHealth,
   SimulateCreateInvoiceResult,
   SimulatePayResult,
+  SyncResult,
   WalletAdapter,
 } from "./types.js";
 import { subscribeToInvoice as _subscribeToInvoice } from "./stream.js";
@@ -66,8 +69,8 @@ export interface StellarSplitPlugin {
 
 /** Configuration for StellarSplitClient. */
 export interface StellarSplitClientConfig {
-  /** Soroban RPC endpoint URL. */
-  rpcUrl: string;
+  /** Soroban RPC endpoint URL or array of URLs for multi-endpoint sync. */
+  rpcUrl: string | string[];
   /** Stellar network passphrase. */
   networkPassphrase: string;
   /** Deployed StellarSplit contract ID. */
@@ -81,6 +84,8 @@ export interface StellarSplitClientConfig {
   feeBumpMultiplier?: number;
   /** Optional wallet adapter for signing (e.g. WalletConnect). Defaults to Freighter. */
   adapter?: WalletAdapter;
+  /** Optional feature flags for experimental features. All default to false. */
+  flags?: FeatureFlags;
 }
 
 /** Network configuration. */
@@ -121,8 +126,9 @@ export class StellarSplitClient {
 
   constructor(config: StellarSplitClientConfig) {
     this.config = config;
-    this.server = new SorobanRpc.Server(config.rpcUrl, {
-      allowHttp: config.rpcUrl.startsWith("http://"),
+    const primaryUrl = (Array.isArray(config.rpcUrl) ? config.rpcUrl[0] : config.rpcUrl) ?? "";
+    this.server = new SorobanRpc.Server(primaryUrl, {
+      allowHttp: primaryUrl.startsWith("http://"),
     });
     this.contract = new Contract(config.contractId);
 
@@ -1310,6 +1316,67 @@ export class StellarSplitClient {
       telemetry.recordMethod("resolveDispute", false, Date.now() - startTime);
       throw error;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #73 — syncInvoice (cross-network)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch invoice state from all configured RPC endpoints in parallel and
+   * return the most recent version based on lastModifiedLedger.
+   *
+   * @param invoiceId - The invoice ID to sync.
+   * @returns The invoice from the endpoint with the highest lastModifiedLedger.
+   * @throws If all endpoints fail.
+   */
+  async syncInvoice(invoiceId: string): Promise<SyncResult> {
+    const urls = Array.isArray(this.config.rpcUrl)
+      ? this.config.rpcUrl
+      : [this.config.rpcUrl];
+
+    const results = await Promise.allSettled(
+      urls.map(async (url) => {
+        const server = new SorobanRpc.Server(url, {
+          allowHttp: url.startsWith("http://"),
+        });
+        const operation = this.contract.call(
+          "get_invoice",
+          nativeToScVal(BigInt(invoiceId), { type: "u64" })
+        );
+        const account = await server.getAccount(this.config.contractId).catch(() => null);
+        const sourceAccount = account ?? new Account(this.config.contractId, "0");
+        const tx = new TransactionBuilder(sourceAccount, {
+          fee: BASE_FEE,
+          networkPassphrase: this.config.networkPassphrase,
+        })
+          .addOperation(operation)
+          .setTimeout(30)
+          .build();
+        const simResult = await server.simulateTransaction(tx);
+        if (SorobanRpc.Api.isSimulationError(simResult)) {
+          throw new Error(`Simulation failed on ${url}: ${simResult.error}`);
+        }
+        const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+        if (!returnVal) throw new Error(`No return value from ${url}`);
+        const raw = scValToNative(returnVal) as Record<string, unknown>;
+        const invoice = this._parseInvoice(invoiceId, raw);
+        const ledger = typeof raw.lastModifiedLedger === "number"
+          ? raw.lastModifiedLedger
+          : 0;
+        return { invoice, source: url, ledger };
+      })
+    );
+
+    const successful = results
+      .filter((r): r is PromiseFulfilledResult<SyncResult> => r.status === "fulfilled")
+      .map((r) => r.value);
+
+    if (successful.length === 0) {
+      throw new Error("All RPC endpoints failed to sync invoice");
+    }
+
+    return successful.reduce((best, cur) => cur.ledger > best.ledger ? cur : best);
   }
 
 }
