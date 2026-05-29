@@ -34,6 +34,9 @@ export { pollUSDCBalance, initPoller } from "./poller.js";
 
 export { telemetry } from "./telemetry.js";
 
+export { registerWebhook, triggerWebhook } from "./webhook.js";
+export type { WebhookConfig, WebhookEvent } from "./webhook.js";
+
 export type { WalletAdapter } from "./adapters/types.js";
 export { WalletConnectAdapter } from "./adapters/walletconnect.js";
 export { LedgerAdapter } from "./adapters/ledger.js";
@@ -52,6 +55,20 @@ export { diffInvoice } from "./diff.js";
 
 export { getSDKHealth, resetSDKHealth } from "./healthDashboard.js";
 
+export { subscribeToInvoice } from "./stream.js";
+
+export {
+  StellarSplitError,
+  InvoiceNotFoundError,
+  InvoiceNotPendingError,
+  DeadlinePassedError,
+  PaymentExceedsRemainingError,
+  InvoiceFrozenError,
+  parseSorobanError,
+} from "./errors.js";
+
+export { SimpleCache } from "./cache.js";
+
 export type {
   Invoice,
   Payment,
@@ -68,17 +85,11 @@ export type {
   SimulatePayResult,
   InvoiceDiff,
   SDKHealth,
-  BatchResolveResult,
+  BatchPayment,
+  InvoiceEventCallbacks,
+  SimulateCreateInvoiceResult,
+  SimulatePayResult,
+  FeeEstimate,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
 
-// Issue #82 — Connection pooling
-export { ConnectionPool } from "./connectionPool.js";
-
-// Issue #83 — Invoice snapshot
-export { snapshotInvoice } from "./snapshot.js";
-export type { InvoiceSnapshot } from "./snapshot.js";
-
-// Issue #84 — Audit logger
-export { AuditLogger } from "./auditLogger.js";
-export type { AuditEntry } from "./auditLogger.js";

@@ -215,7 +215,10 @@ export interface SimulatePayResult {
   fee: string;
 }
 
-/** A single result from resolveBatch. */
-export type BatchResolveResult =
-  | { invoiceId: string; success: true; invoice: Invoice }
-  | { invoiceId: string; success: false; error: string };
+/** Fee estimate returned by estimateFee(). */
+export interface FeeEstimate {
+  /** Estimated transaction fee in stroops. */
+  fee: bigint;
+  /** Network congestion level derived from recent fee statistics. */
+  congestion: "low" | "medium" | "high";
+}
