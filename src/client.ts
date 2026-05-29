@@ -17,6 +17,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "./wallet.js";
 import { telemetry } from "./telemetry.js";
+import { withRetry } from "./retry.js";
 import { isFeatureEnabled } from "./flags.js";
 import type { FeatureFlags } from "./flags.js";
 import { checkRPCHealth } from "./health.js";
@@ -31,17 +32,18 @@ import { resolveToken } from "./token.js";
 import { generatePaymentProof } from "./proof.js";
 import type {
   ArchivedInvoice,
-  BatchPayment,
-  BatchResolveResult,
   ArbiterVote,
   BatchPayment,
+  BatchResolveResult,
+  CoSignature,
   CreateInvoiceParams,
   DisputeResult,
   FeeBreakdown,
+  FeeEstimate,
   Invoice,
   InvoiceEventCallbacks,
   InvoiceGroup,
-  InvoiceEventCallbacks,
+  InvoiceReceipt,
   InvoiceStatus,
   PaginatedResult,
   PaginationOptions,
@@ -53,8 +55,6 @@ import type {
   SimulatePayResult,
   InvoiceTemplate,
   RPCHealth,
-  SimulateCreateInvoiceResult,
-  SimulatePayResult,
   SyncResult,
   WalletAdapter,
   TokenInfo,
@@ -64,8 +64,11 @@ import { subscribeToInvoice as _subscribeToInvoice } from "./stream.js";
 import { ConnectionPool } from "./connectionPool.js";
 import { snapshotInvoice as _snapshotInvoice } from "./snapshot.js";
 import type { InvoiceSnapshot } from "./snapshot.js";
+import { SimpleCache } from "./cache.js";
+import { parseSorobanError } from "./errors.js";
+import { RateLimiter } from "./rateLimiter.js";
+import { DegradationManager } from "./degradation.js";
 import { AuditLogger } from "./auditLogger.js";
-import type { AuditEntry } from "./auditLogger.js";
 import { WarmStandby } from "./standby.js";
 import { computePrediction } from "./predictor.js";
 import type { CompletionPrediction } from "./predictor.js";
@@ -88,6 +91,8 @@ export interface StellarSplitClientConfig {
   networkPassphrase: string;
   /** Deployed StellarSplit contract ID. */
   contractId: string;
+  /** Maximum retry attempts for transient pay() failures. Defaults to 3. */
+  maxRetries?: number;
   /** Optional telemetry configuration. */
   telemetry?: {
     endpoint: string;
@@ -139,6 +144,9 @@ export class StellarSplitClient {
   private _plugins = new Set<string>();
   private _dedup = new Deduplicator<Invoice>();
   private _cache: SimpleCache<Invoice> | null = null;
+  private _auditLogger: AuditLogger | null = null;
+  private _degradation: DegradationManager | null = null;
+  private _rateLimiter: RateLimiter | null = null;
 
   private get server(): SorobanRpc.Server {
     return this._standby?.server ?? this._mainServer;
@@ -367,7 +375,11 @@ export class StellarSplitClient {
         nativeToScVal(params.amount, { type: "i128" })
       );
 
-      const result = await this._submitTx(params.payer, operation);
+      const result = await withRetry(
+        () => this._submitTx(params.payer, operation),
+        this.config.maxRetries ?? 3,
+        1000
+      );
       this._cache?.invalidate(params.invoiceId);
       telemetry.recordMethod("pay", true, Date.now() - startTime);
       return { txHash: result.txHash };
@@ -522,6 +534,40 @@ export class StellarSplitClient {
       return invoice.payments;
     } catch (error) {
       telemetry.recordMethod("getPayments", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate a typed receipt for a released invoice.
+   */
+  async generateReceipt(invoiceId: string): Promise<InvoiceReceipt> {
+    const startTime = Date.now();
+    try {
+      const invoice = await this.getInvoice(invoiceId);
+      if (invoice.status !== "Released") {
+        throw new Error("Invoice must be Released to generate a receipt");
+      }
+
+      const receiptId = await this._buildReceiptId(invoice);
+      const totalAmount = invoice.payments.reduce(
+        (sum, payment) => sum + payment.amount,
+        0n
+      );
+      const receipt: InvoiceReceipt = {
+        receiptId,
+        invoiceId: invoice.id,
+        creator: invoice.creator,
+        recipients: invoice.recipients,
+        payments: invoice.payments,
+        totalAmount,
+        releasedAt: Date.now(),
+      };
+
+      telemetry.recordMethod("generateReceipt", true, Date.now() - startTime);
+      return receipt;
+    } catch (error) {
+      telemetry.recordMethod("generateReceipt", false, Date.now() - startTime);
       throw error;
     }
   }
@@ -1147,12 +1193,18 @@ export class StellarSplitClient {
    * @returns FeeEstimate with fee in stroops and a congestion indicator.
    */
   async estimateFee(operation: xdr.Operation): Promise<FeeEstimate> {
-    return _estimateFee(
-      this.server,
-      this.config.networkPassphrase,
-      this.config.contractId,
-      operation
-    );
+    const simResult = await this._simulateView(operation) as { minResourceFee?: string; error?: string };
+    if (simResult.error) throw new Error(`Fee estimation failed: ${simResult.error}`);
+    const fee = BigInt(simResult.minResourceFee ?? "0");
+    let congestion: FeeEstimate["congestion"] = "low";
+    try {
+      const stats = await this.server.getFeeStats() as { sorobanInclusionFee?: { p50?: string; p99?: string } };
+      const p50 = Number(stats.sorobanInclusionFee?.p50 ?? "1");
+      const p99 = Number(stats.sorobanInclusionFee?.p99 ?? "1");
+      const ratio = p99 > 0 ? p50 / p99 : 1;
+      congestion = ratio >= 0.9 ? "low" : ratio >= 0.5 ? "medium" : "high";
+    } catch { /* use default */ }
+    return { fee, congestion };
   }
 
   // ---------------------------------------------------------------------------
@@ -1200,32 +1252,6 @@ export class StellarSplitClient {
   /** Clear the entire invoice cache. */
   clearCache(): void {
     this._cache?.clear();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Issue #2 — subscribeToInvoice (streaming)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Subscribe to live invoice events via Soroban RPC event polling.
-   *
-   * @param invoiceId  - The invoice ID to watch.
-   * @param callbacks  - Typed event callbacks.
-   * @param intervalMs - Poll interval in milliseconds (default: 5000).
-   * @returns Unsubscribe function that stops the stream.
-   */
-  subscribeToInvoice(
-    invoiceId: string,
-    callbacks: InvoiceEventCallbacks,
-    intervalMs?: number
-  ): () => void {
-    return _subscribeToInvoice(
-      this.server,
-      this.config.contractId,
-      invoiceId,
-      callbacks,
-      intervalMs
-    );
   }
 
   /**
@@ -1516,6 +1542,16 @@ export class StellarSplitClient {
     }
   }
 
+  /** Build a deterministic SHA-256 receipt ID from invoice fields. */
+  private async _buildReceiptId(invoice: Invoice): Promise<string> {
+    const payload = `${invoice.id}${invoice.funded}${invoice.deadline}`;
+    const data = new TextEncoder().encode(payload);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hashBuffer))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
   /** Parse a raw contract map into a typed Invoice. */
   private _parseInvoice(id: string, raw: Record<string, unknown>): Invoice {
     const statusMap: Record<string, InvoiceStatus> = {
@@ -1574,7 +1610,7 @@ export class StellarSplitClient {
    * @returns The invoice from the endpoint with the highest lastModifiedLedger.
    * @throws If all endpoints fail.
    */
-  async syncInvoice(invoiceId: string): Promise<SyncResult> {
+  async syncInvoice(invoiceId: string): Promise<{ invoice: Invoice; source: string; ledger: number }> {
     const urls = Array.isArray(this.config.rpcUrl)
       ? this.config.rpcUrl
       : [this.config.rpcUrl];
@@ -1613,7 +1649,7 @@ export class StellarSplitClient {
     );
 
     const successful = results
-      .filter((r): r is PromiseFulfilledResult<SyncResult> => r.status === "fulfilled")
+      .filter((r): r is PromiseFulfilledResult<{ invoice: Invoice; source: string; ledger: number }> => r.status === "fulfilled")
       .map((r) => r.value);
 
     if (successful.length === 0) {

@@ -42,6 +42,8 @@ export { pollUSDCBalance, initPoller } from "./poller.js";
 
 export { telemetry } from "./telemetry.js";
 
+export { generateGraphQLSchema } from "./graphql.js";
+
 export { registerWebhook, triggerWebhook } from "./webhook.js";
 export type { WebhookConfig, WebhookEvent } from "./webhook.js";
 
@@ -68,8 +70,6 @@ export { diffInvoice } from "./diff.js";
 
 export { getSDKHealth, resetSDKHealth } from "./healthDashboard.js";
 
-export { subscribeToInvoice } from "./stream.js";
-
 export {
   StellarSplitError,
   InvoiceNotFoundError,
@@ -84,6 +84,7 @@ export { SimpleCache } from "./cache.js";
 
 export type {
   Invoice,
+  InvoiceReceipt,
   Payment,
   Recipient,
   InvoiceStatus,
