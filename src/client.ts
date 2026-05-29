@@ -23,13 +23,19 @@ import {
   runRequestInterceptors,
   runResponseInterceptors,
 } from "./interceptors.js";
+import { SimpleCache } from "./cache.js";
+import { parseSorobanError } from "./errors.js";
+import { estimateFee as _estimateFee } from "./fee.js";
 import { InvoiceNotFoundError } from "./types.js";
 import type {
   ApprovalResult,
   ArbiterVote,
+  BatchPayment,
   CreateInvoiceParams,
   DisputeResult,
+  FeeEstimate,
   Invoice,
+  InvoiceEventCallbacks,
   InvoiceGroup,
   InvoiceStatus,
   PaginatedResult,
@@ -37,10 +43,13 @@ import type {
   Payment,
   PayParams,
   Recipient,
+  SimulateCreateInvoiceResult,
+  SimulatePayResult,
   InvoiceTemplate,
   RPCHealth,
   WalletAdapter,
 } from "./types.js";
+import { subscribeToInvoice as _subscribeToInvoice } from "./stream.js";
 
 /** A plugin that extends StellarSplitClient with new methods at runtime. */
 export interface StellarSplitPlugin {
@@ -67,6 +76,8 @@ export interface StellarSplitClientConfig {
   feeBumpMultiplier?: number;
   /** Optional wallet adapter for signing (e.g. WalletConnect). Defaults to Freighter. */
   adapter?: WalletAdapter;
+  /** Optional in-memory cache configuration. Disabled by default. */
+  cache?: { ttlMs: number };
 }
 
 /** Network configuration. */
@@ -104,6 +115,7 @@ export class StellarSplitClient {
   private config: StellarSplitClientConfig;
   private _plugins = new Set<string>();
   private _dedup = new Deduplicator<Invoice>();
+  private _cache: SimpleCache<Invoice> | null = null;
 
   constructor(config: StellarSplitClientConfig) {
     this.config = config;
@@ -114,6 +126,10 @@ export class StellarSplitClient {
 
     if (config.telemetry) {
       telemetry.init(config.telemetry);
+    }
+
+    if (config.cache) {
+      this._cache = new SimpleCache<Invoice>(config.cache.ttlMs);
     }
 
     initHealthDashboard(this.server, this._dedup);
@@ -300,6 +316,7 @@ export class StellarSplitClient {
       );
 
       const result = await this._submitTx(params.payer, operation);
+      this._cache?.invalidate(params.invoiceId);
       telemetry.recordMethod("pay", true, Date.now() - startTime);
       return { txHash: result.txHash };
     } catch (error) {
@@ -368,10 +385,18 @@ export class StellarSplitClient {
   }
 
   /**
-   * Fetch an invoice by ID.
+   * Fetch an invoice by ID. Returns cached result if within TTL.
    */
   async getInvoice(invoiceId: string): Promise<Invoice> {
-    return this._dedup.dedupe(invoiceId, () => this._fetchInvoice(invoiceId));
+    if (this._cache) {
+      const cached = this._cache.get(invoiceId);
+      if (cached) return cached;
+    }
+    const invoice = await this._dedup.dedupe(invoiceId, () => this._fetchInvoice(invoiceId));
+    if (this._cache) {
+      this._cache.set(invoiceId, invoice);
+    }
+    return invoice;
   }
 
   private async _fetchInvoice(invoiceId: string): Promise<Invoice> {
@@ -398,11 +423,11 @@ export class StellarSplitClient {
 
       const simResult = await this.server.simulateTransaction(tx);
       if (SorobanRpc.Api.isSimulationError(simResult)) {
-        throw new Error(`Simulation failed: ${simResult.error}`);
+        throw parseSorobanError(simResult.error, invoiceId);
       }
 
       const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
-      if (!returnVal) throw new Error("No return value from get_invoice");
+      if (!returnVal) throw new InvoiceNotFoundError(invoiceId);
 
       const invoice = this._parseInvoice(invoiceId, scValToNative(returnVal));
       telemetry.recordMethod("getInvoice", true, Date.now() - startTime);
@@ -747,6 +772,98 @@ export class StellarSplitClient {
     return { txHash: result.txHash };
   }
 
+  // ---------------------------------------------------------------------------
+  // Issue #5 — fee estimator
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Estimate the fee for a contract operation without submitting.
+   *
+   * @param operation - The contract operation to estimate fees for.
+   * @returns FeeEstimate with fee in stroops and a congestion indicator.
+   */
+  async estimateFee(operation: xdr.Operation): Promise<FeeEstimate> {
+    return _estimateFee(
+      this.server,
+      this.config.networkPassphrase,
+      this.config.contractId,
+      operation
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #6 — multi-signature collection
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Collect signatures from multiple signers sequentially and return a
+   * fully signed XDR string ready for submitTransaction().
+   *
+   * @param xdrStr  - Base64-encoded unsigned (or partially signed) transaction XDR.
+   * @param signers - Ordered list of signer addresses.
+   * @returns Fully signed transaction XDR.
+   * @throws If any signer fails to sign.
+   */
+  async collectSignatures(xdrStr: string, signers: string[]): Promise<string> {
+    if (signers.length === 0) {
+      throw new Error("signers array must not be empty");
+    }
+
+    let current = xdrStr;
+    for (const signer of signers) {
+      try {
+        current = await (this.config.adapter
+          ? this.config.adapter.signTransaction(current, this.config.networkPassphrase)
+          : signTransaction(current, this.config.networkPassphrase));
+      } catch (err) {
+        throw new Error(
+          `Signer ${signer} failed to sign: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    return current;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #7 — cache invalidation helpers (public)
+  // ---------------------------------------------------------------------------
+
+  /** Manually invalidate a cached invoice entry. */
+  invalidateCache(invoiceId: string): void {
+    this._cache?.invalidate(invoiceId);
+  }
+
+  /** Clear the entire invoice cache. */
+  clearCache(): void {
+    this._cache?.clear();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #2 — subscribeToInvoice (streaming)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Subscribe to live invoice events via Soroban RPC event polling.
+   *
+   * @param invoiceId  - The invoice ID to watch.
+   * @param callbacks  - Typed event callbacks.
+   * @param intervalMs - Poll interval in milliseconds (default: 5000).
+   * @returns Unsubscribe function that stops the stream.
+   */
+  subscribeToInvoice(
+    invoiceId: string,
+    callbacks: InvoiceEventCallbacks,
+    intervalMs?: number
+  ): () => void {
+    return _subscribeToInvoice(
+      this.server,
+      this.config.contractId,
+      invoiceId,
+      callbacks,
+      intervalMs
+    );
+  }
+
   /**
    * Switch to a different network.
    *
@@ -858,7 +975,7 @@ export class StellarSplitClient {
 
       const simResult = await this.server.simulateTransaction(tx);
       if (SorobanRpc.Api.isSimulationError(simResult)) {
-        throw new Error(`Simulation failed: ${simResult.error}`);
+        throw parseSorobanError(simResult.error);
       }
 
       const preparedTx = SorobanRpc.assembleTransaction(tx, simResult).build();
