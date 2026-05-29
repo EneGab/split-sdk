@@ -221,3 +221,10 @@ export interface SimulatePayResult {
   /** Estimated fee in stroops. */
   fee: string;
 }
+
+/** Result of a cross-network invoice sync. */
+export interface SyncResult {
+  invoice: Invoice;
+  source: string;
+  ledger: number;
+}
