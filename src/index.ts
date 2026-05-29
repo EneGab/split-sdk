@@ -4,8 +4,6 @@
 
 export { StellarSplitClient } from "./client.js";
 export type { StellarSplitClientConfig, NetworkConfig, TxResult } from "./client.js";
-// Dispute management methods (for clarity, these are instance methods on StellarSplitClient)
-// Types exported below
 
 export { Deduplicator } from "./dedup.js";
 
@@ -48,11 +46,29 @@ export {
   addRequestInterceptor,
   addResponseInterceptor,
 } from "./interceptors.js";
-export type { RequestInterceptor, ResponseInterceptor, RPCRequest, RPCResponse } from "./interceptors.js";
+export type {
+  RequestInterceptor,
+  ResponseInterceptor,
+  RPCRequest,
+  RPCResponse,
+} from "./interceptors.js";
 
 export { diffInvoice } from "./diff.js";
 
 export { getSDKHealth, resetSDKHealth } from "./healthDashboard.js";
+
+export { indexInvoice, searchInvoices } from "./searchEngine.js";
+
+export { buildInvoiceGraph } from "./graph.js";
+export type { InvoiceNode, InvoiceGraph } from "./graph.js";
+
+export type { RateLimiterConfig } from "./rateLimiter.js";
+
+export type {
+  DegradedRead,
+  PendingResult,
+  DegradationConfig,
+} from "./degradation.js";
 
 export type {
   Invoice,
@@ -68,10 +84,13 @@ export type {
   InvoiceEventCallbacks,
   SimulateCreateInvoiceResult,
   SimulatePayResult,
-} from "./types.js";
   InvoiceDiff,
   SDKHealth,
+  ArbiterVote,
+  DisputeResult,
+  RPCHealth,
+  InvoiceGroup,
+  VestingSchedule,
+  UpgradeEvent,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
-
-export { LedgerAdapter } from "./adapters/ledger.js";

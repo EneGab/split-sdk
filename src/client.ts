@@ -24,7 +24,10 @@ import {
   runRequestInterceptors,
   runResponseInterceptors,
 } from "./interceptors.js";
-import { InvoiceNotFoundError } from "./types.js";
+import { RateLimiter } from "./rateLimiter.js";
+import type { RateLimiterConfig } from "./rateLimiter.js";
+import { DegradationManager } from "./degradation.js";
+import type { DegradationConfig } from "./degradation.js";
 import type {
   ApprovalResult,
   BatchPayment,
@@ -81,6 +84,10 @@ export interface StellarSplitClientConfig {
   feeBumpMultiplier?: number;
   /** Optional wallet adapter for signing (e.g. WalletConnect). Defaults to Freighter. */
   adapter?: WalletAdapter;
+  /** Optional rate-limiting config. When set, requests are token-bucket throttled. */
+  rateLimit?: RateLimiterConfig;
+  /** Optional graceful-degradation config. When set, reads fall back to cache and writes queue on RPC failure. */
+  degradation?: DegradationConfig;
 }
 
 /** Network configuration. */
@@ -118,6 +125,8 @@ export class StellarSplitClient {
   private config: StellarSplitClientConfig;
   private _plugins = new Set<string>();
   private _dedup = new Deduplicator<Invoice>();
+  private _rateLimiter?: RateLimiter;
+  private _degradation?: DegradationManager;
 
   constructor(config: StellarSplitClientConfig) {
     this.config = config;
@@ -128,6 +137,14 @@ export class StellarSplitClient {
 
     if (config.telemetry) {
       telemetry.init(config.telemetry);
+    }
+
+    if (config.rateLimit) {
+      this._rateLimiter = new RateLimiter(config.rateLimit);
+    }
+
+    if (config.degradation?.enabled) {
+      this._degradation = new DegradationManager();
     }
 
     initHealthDashboard(this.server, this._dedup);
@@ -394,14 +411,24 @@ export class StellarSplitClient {
     const startTime = Date.now();
     const req = { method: "getInvoice", params: [invoiceId] };
     await runRequestInterceptors(req);
-    try {
+
+    const fetchFn = async (): Promise<Invoice> => {
       const operation = this.contract.call(
         "get_invoice",
         nativeToScVal(BigInt(invoiceId), { type: "u64" })
       );
-
       const raw = await this._simulateView(operation);
-      const invoice = this._parseInvoice(invoiceId, raw as Record<string, unknown>);
+      return this._parseInvoice(invoiceId, raw as Record<string, unknown>);
+    };
+
+    try {
+      let invoice: Invoice;
+      if (this._degradation) {
+        const result = await this._degradation.wrapRead(invoiceId, fetchFn);
+        invoice = result.data;
+      } else {
+        invoice = await fetchFn();
+      }
       telemetry.recordMethod("getInvoice", true, Date.now() - startTime);
       const durationMs = Date.now() - startTime;
       await runResponseInterceptors({ method: "getInvoice", result: invoice, durationMs });
@@ -664,7 +691,7 @@ export class StellarSplitClient {
     const total = allIds.length;
     const startIndex = options.cursor ? allIds.indexOf(options.cursor) + 1 : 0;
     const page = allIds.slice(startIndex, startIndex + limit);
-    const nextCursor = startIndex + limit < total ? page[page.length - 1] : null;
+    const nextCursor = startIndex + limit < total ? (page[page.length - 1] ?? null) : null;
 
     return { items: page, nextCursor, total };
   }
@@ -915,7 +942,7 @@ export class StellarSplitClient {
       accountId: () => params.creator,
       sequenceNumber: () => "0",
       incrementSequenceNumber: () => {},
-    } as Parameters<typeof TransactionBuilder>[0]);
+    } as unknown as Account);
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
@@ -959,7 +986,7 @@ export class StellarSplitClient {
       accountId: () => params.payer,
       sequenceNumber: () => "0",
       incrementSequenceNumber: () => {},
-    } as Parameters<typeof TransactionBuilder>[0]);
+    } as unknown as Account);
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
@@ -1005,34 +1032,13 @@ export class StellarSplitClient {
     this.contract = new Contract(config.contractId);
   }
 
-  /**
-   * Get all invoices where an address is a recipient.
-   */
-  private async getInvoicesByRecipient(recipient: string): Promise<Invoice[]> {
-    const operation = this.contract.call(
-      "get_invoices_by_recipient",
-      nativeToScVal(recipient, { type: "address" })
-    );
-
-    let invoices: unknown;
-    try {
-      invoices = await this._simulateView(operation);
-    } catch {
-      return [];
-    }
-    if (!Array.isArray(invoices)) return [];
-
-    return invoices.map((inv: Record<string, unknown>, idx: number) =>
-      this._parseInvoice(idx.toString(), inv)
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
 
   /** Simulate a read-only contract call and return the native-decoded result. */
   private async _simulateView(operation: xdr.Operation): Promise<unknown> {
+    await this._rateLimiter?.acquire();
     const account = await this.server.getAccount(this.config.contractId).catch(() => null);
     const sourceAccount = account ?? new Account(this.config.contractId, "0");
 
@@ -1055,39 +1061,24 @@ export class StellarSplitClient {
     return scValToNative(returnVal);
   }
 
-  // ---------------------------------------------------------------------------
-  // Internal helpers
-  // ---------------------------------------------------------------------------
-
-  /** Simulate a view-only (read) contract call. */
-  private async _simulateView<T>(operation: xdr.Operation, parseFn: (val: unknown) => T): Promise<T> {
-    const account = await this.server.getAccount(this.config.contractId).catch(() => null);
-    const sourceAccount = account ?? ({ accountId: () => this.config.contractId, sequenceNumber: () => "0", incrementSequenceNumber: () => {} } as { accountId: () => string; sequenceNumber: () => string; incrementSequenceNumber: () => void });
-
-    const tx = new TransactionBuilder(sourceAccount, {
-      fee: BASE_FEE,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(operation)
-      .setTimeout(30)
-      .build();
-
-    const simResult = await this.server.simulateTransaction(tx);
-    if (SorobanRpc.Api.isSimulationError(simResult)) {
-      throw new Error(`Simulation failed: ${simResult.error}`);
-    }
-
-    const returnVal = (simResult as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
-    if (!returnVal) throw new Error("No return value from view call");
-
-    return parseFn(scValToNative(returnVal));
-  }
-
   /** Build, simulate, sign, and submit a transaction. */
   private async _submitTx(
     sourceAddress: string,
     operation: xdr.Operation
   ): Promise<{ txHash: string; returnValue: xdr.ScVal }> {
+    if (this._degradation) {
+      return this._degradation.wrapWrite(() =>
+        this._submitTxCore(sourceAddress, operation)
+      );
+    }
+    return this._submitTxCore(sourceAddress, operation);
+  }
+
+  private async _submitTxCore(
+    sourceAddress: string,
+    operation: xdr.Operation
+  ): Promise<{ txHash: string; returnValue: xdr.ScVal }> {
+    await this._rateLimiter?.acquire();
     const req = { method: "_submitTx", params: [sourceAddress] };
     await runRequestInterceptors(req);
 
@@ -1240,76 +1231,9 @@ export class StellarSplitClient {
       status: statusMap[raw.status as string] ?? "Pending",
       payments,
       recurring: raw.recurring as boolean | undefined,
+      memo: raw.memo as string | undefined,
+      clonedFrom: raw.clonedFrom as string | undefined,
+      groupId: raw.groupId as string | undefined,
     };
   }
-  /**
-   * Dispute an invoice by ID.
-   * @param invoiceId - The ID of the invoice to dispute.
-   * @returns The dispute ID and transaction hash.
-   */
-  async disputeInvoice(invoiceId: string): Promise<DisputeResult> {
-    const startTime = Date.now();
-    try {
-      const operation = this.contract.call(
-        "dispute_invoice",
-        nativeToScVal(BigInt(invoiceId), { type: "u64" })
-      );
-      // Assuming the creator is the one calling dispute
-      // You may want to pass the creator as a parameter if needed
-      const result = await this._submitTx(this.config.contractId, operation);
-      const disputeId = scValToNative(result.returnValue).toString();
-      telemetry.recordMethod("disputeInvoice", true, Date.now() - startTime);
-      return { disputeId, txHash: result.txHash };
-    } catch (error) {
-      telemetry.recordMethod("disputeInvoice", false, Date.now() - startTime);
-      throw error;
-    }
-  }
-
-  /**
-   * Submit an arbiter's vote for a dispute.
-   * @param vote - The arbiter vote parameters.
-   * @returns The dispute ID and transaction hash.
-   */
-  async submitArbiterVote(vote: ArbiterVote): Promise<DisputeResult> {
-    const startTime = Date.now();
-    try {
-      const operation = this.contract.call(
-        "submit_arbiter_vote",
-        nativeToScVal(BigInt(vote.invoiceId), { type: "u64" }),
-        nativeToScVal(vote.arbiter, { type: "address" }),
-        nativeToScVal(vote.approve, { type: "bool" })
-      );
-      const result = await this._submitTx(vote.arbiter, operation);
-      const disputeId = scValToNative(result.returnValue).toString();
-      telemetry.recordMethod("submitArbiterVote", true, Date.now() - startTime);
-      return { disputeId, txHash: result.txHash };
-    } catch (error) {
-      telemetry.recordMethod("submitArbiterVote", false, Date.now() - startTime);
-      throw error;
-    }
-  }
-
-  /**
-   * Resolve a dispute for an invoice.
-   * @param invoiceId - The ID of the invoice to resolve dispute for.
-   * @returns The dispute ID and transaction hash.
-   */
-  async resolveDispute(invoiceId: string): Promise<DisputeResult> {
-    const startTime = Date.now();
-    try {
-      const operation = this.contract.call(
-        "resolve_dispute",
-        nativeToScVal(BigInt(invoiceId), { type: "u64" })
-      );
-      const result = await this._submitTx(this.config.contractId, operation);
-      const disputeId = scValToNative(result.returnValue).toString();
-      telemetry.recordMethod("resolveDispute", true, Date.now() - startTime);
-      return { disputeId, txHash: result.txHash };
-    } catch (error) {
-      telemetry.recordMethod("resolveDispute", false, Date.now() - startTime);
-      throw error;
-    }
-  }
-
 }
