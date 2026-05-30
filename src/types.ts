@@ -399,3 +399,17 @@ export interface CoSignature {
   signer: string;
   signedXdr: string;
 }
+
+/** Invoice lifecycle hooks for side effects at specific state transitions. */
+export interface InvoiceLifecycleHooks {
+  /** Called after successful createInvoice() */
+  onCreated?: (invoice: Invoice) => void;
+  /** Called after successful pay() with payment details */
+  onPaid?: (invoice: Invoice, payment: Payment) => void;
+  /** Called after successful release() */
+  onReleased?: (invoice: Invoice) => void;
+  /** Called after successful refund() */
+  onRefunded?: (invoice: Invoice) => void;
+  /** Called after successful cancel() */
+  onCancelled?: (invoice: Invoice) => void;
+}

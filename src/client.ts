@@ -61,6 +61,7 @@ import type {
   SyncResult,
   WalletAdapter,
   TokenInfo,
+  InvoiceLifecycleHooks,
 } from "./types.js";
 import { InvoiceNotFoundError } from "./types.js";
 import { subscribeToInvoice as _subscribeToInvoice } from "./stream.js";
@@ -111,6 +112,8 @@ export interface StellarSplitClientConfig {
   signingKeypair?: Keypair;
   /** Optional compliance rules injectable for invoice checks. */
   complianceRules?: import("./compliance.js").ComplianceRule[];
+  /** Optional invoice lifecycle hooks for side effects. */
+  hooks?: InvoiceLifecycleHooks;
 }
 
 /** Network configuration. */
@@ -153,12 +156,95 @@ export class StellarSplitClient {
   private _auditLogger: AuditLogger | null = null;
   private _degradation: DegradationManager | null = null;
   private _rateLimiter: RateLimiter | null = null;
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
+  private _hooks: InvoiceLifecycleHooks = {};
 
   private get server(): SorobanRpc.Server {
     return this._standby?.server ?? this._mainServer;
   }
   private set server(s: SorobanRpc.Server) {
     this._mainServer = s;
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice creation.
+   */
+  private _fireOnCreated(invoice: Invoice): void {
+    if (this._hooks?.onCreated) {
+      try {
+        this._hooks.onCreated(invoice);
+      } catch (error) {
+        console.error("Error in onCreated hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice payment.
+   */
+  private _fireOnPaid(invoice: Invoice, payment: Payment): void {
+    if (this._hooks?.onPaid) {
+      try {
+        this._hooks.onPaid(invoice, payment);
+      } catch (error) {
+        console.error("Error in onPaid hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice release.
+   */
+  private _fireOnReleased(invoice: Invoice): void {
+    if (this._hooks?.onReleased) {
+      try {
+        this._hooks.onReleased(invoice);
+      } catch (error) {
+        console.error("Error in onReleased hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice refund.
+   */
+  private _fireOnRefunded(invoice: Invoice): void {
+    if (this._hooks?.onRefunded) {
+      try {
+        this._hooks.onRefunded(invoice);
+      } catch (error) {
+        console.error("Error in onRefunded hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice cancellation.
+   */
+  private _fireOnCancelled(invoice: Invoice): void {
+    if (this._hooks?.onCancelled) {
+      try {
+        this._hooks.onCancelled(invoice);
+      } catch (error) {
+        console.error("Error in onCancelled hook:", error);
+      }
+    }
   }
 
   constructor(config: StellarSplitClientConfig) {
@@ -186,6 +272,9 @@ export class StellarSplitClient {
     if (config.cache) {
       this._cache = new SimpleCache<Invoice>(config.cache.ttlMs);
     }
+
+    // Initialize hooks
+    this._hooks = config.hooks ?? {};
 
     initHealthDashboard(this.server, this._dedup);
   }

@@ -11,6 +11,7 @@ import {
 import { pollUSDCBalance, initPoller } from "../src/poller.js";
 import { telemetry } from "../src/telemetry.js";
 import { StellarSplitClient } from "../src/client.js";
+import { WalletConnectAdapter } from "../src/adapters/walletconnect.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
