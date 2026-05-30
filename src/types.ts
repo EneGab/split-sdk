@@ -323,6 +323,15 @@ export interface BatchResolveResult {
   error?: string;
 }
 
+export type BulkResult =
+  | ({ invoiceId: string } & { success: true })
+  | ({ invoiceId: string } & { success: false; error: string });
+
+export interface PaymentValidation {
+  valid: boolean;
+  errors: string[];
+}
+
 /** Result of a sync operation. */
 export interface SyncResult {
   synced: number;
@@ -400,16 +409,14 @@ export interface CoSignature {
   signedXdr: string;
 }
 
-/** Invoice lifecycle hooks for side effects at specific state transitions. */
-export interface InvoiceLifecycleHooks {
-  /** Called after successful createInvoice() */
-  onCreated?: (invoice: Invoice) => void;
-  /** Called after successful pay() with payment details */
-  onPaid?: (invoice: Invoice, payment: Payment) => void;
-  /** Called after successful release() */
-  onReleased?: (invoice: Invoice) => void;
-  /** Called after successful refund() */
-  onRefunded?: (invoice: Invoice) => void;
-  /** Called after successful cancel() */
-  onCancelled?: (invoice: Invoice) => void;
+/**
+ * Feature detection result indicating which contract features are available.
+ * Each field is true if the deployed contract supports the corresponding method.
+ */
+export interface ContractFeatures {
+  batchPay: boolean;
+  cloneInvoice: boolean;
+  invoiceGroups: boolean;
+  templates: boolean;
+  archival: boolean;
 }
