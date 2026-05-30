@@ -14,6 +14,7 @@ import {
   nativeToScVal,
   scValToNative,
   xdr,
+  Keypair,
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "./wallet.js";
 import { telemetry } from "./telemetry.js";
@@ -31,6 +32,8 @@ import {
   runRequestInterceptors,
   runResponseInterceptors,
 } from "./interceptors.js";
+import { addRequestInterceptor } from "./interceptors.js";
+import { createRequestSigningInterceptor } from "./requestSigner.js";
 import { calculateFee } from "./fee.js";
 import { resolveToken } from "./token.js";
 import { generatePaymentProof } from "./proof.js";
@@ -110,6 +113,8 @@ export interface StellarSplitClientConfig {
   adapter?: WalletAdapter;
   /** Optional in-memory cache configuration. Disabled by default. */
   cache?: { ttlMs: number };
+  /** Optional signing keypair for request signing. */
+  signingKeypair?: Keypair;
   /** Optional compliance rules injectable for invoice checks. */
   complianceRules?: import("./compliance.js").ComplianceRule[];
   /** Optional dependency injection container for RPC, cache, and wallet implementations. */
@@ -191,8 +196,15 @@ export class StellarSplitClient {
       telemetry.init(config.telemetry);
     }
 
-    const dashboardServer = this.server as Parameters<typeof initHealthDashboard>[0];
-    initHealthDashboard(dashboardServer, this._dedup);
+    if (config.signingKeypair) {
+      addRequestInterceptor(createRequestSigningInterceptor(config.signingKeypair));
+    }
+
+    if (config.cache) {
+      this._cache = new SimpleCache<Invoice>(config.cache.ttlMs);
+    }
+
+    initHealthDashboard(this.server, this._dedup);
   }
 
   private _logAudit(method: string, params: Record<string, unknown>, success: boolean, durationMs: number): void {
