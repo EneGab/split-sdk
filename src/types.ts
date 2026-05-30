@@ -425,3 +425,13 @@ export interface ContractFeatures {
   templates: boolean;
   archival: boolean;
 }
+
+/**
+ * Weighted endpoint configuration for load balancing.
+ */
+export interface WeightedEndpoint {
+  /** RPC endpoint URL */
+  url: string;
+  /** Weight for this endpoint (higher = more requests) */
+  weight: number;
+}
