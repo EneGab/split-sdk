@@ -66,6 +66,7 @@ import type {
   SyncResult,
   WalletAdapter,
   TokenInfo,
+  InvoiceLifecycleHooks,
 } from "./types.js";
 import type { DIContainer, IRPCClient, ICacheStore, IWalletAdapter } from "./container.js";
 import { InvoiceNotFoundError } from "./types.js";
@@ -172,6 +173,71 @@ export class StellarSplitClient {
     this._mainServer = s;
   }
 
+  /**
+   * Fire lifecycle hooks for invoice creation.
+   */
+  private _fireOnCreated(invoice: Invoice): void {
+    if (this._hooks?.onCreated) {
+      try {
+        this._hooks.onCreated(invoice);
+      } catch (error) {
+        console.error("Error in onCreated hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice payment.
+   */
+  private _fireOnPaid(invoice: Invoice, payment: Payment): void {
+    if (this._hooks?.onPaid) {
+      try {
+        this._hooks.onPaid(invoice, payment);
+      } catch (error) {
+        console.error("Error in onPaid hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice release.
+   */
+  private _fireOnReleased(invoice: Invoice): void {
+    if (this._hooks?.onReleased) {
+      try {
+        this._hooks.onReleased(invoice);
+      } catch (error) {
+        console.error("Error in onReleased hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice refund.
+   */
+  private _fireOnRefunded(invoice: Invoice): void {
+    if (this._hooks?.onRefunded) {
+      try {
+        this._hooks.onRefunded(invoice);
+      } catch (error) {
+        console.error("Error in onRefunded hook:", error);
+      }
+    }
+  }
+
+  /**
+   * Fire lifecycle hooks for invoice cancellation.
+   */
+  private _fireOnCancelled(invoice: Invoice): void {
+    if (this._hooks?.onCancelled) {
+      try {
+        this._hooks.onCancelled(invoice);
+      } catch (error) {
+        console.error("Error in onCancelled hook:", error);
+      }
+    }
+  }
+
   constructor(config: StellarSplitClientConfig) {
     this.config = config;
     const primaryUrl = Array.isArray(config.rpcUrl) ? config.rpcUrl[0]! : config.rpcUrl;
@@ -203,6 +269,9 @@ export class StellarSplitClient {
     if (config.cache) {
       this._cache = new SimpleCache<Invoice>(config.cache.ttlMs);
     }
+
+    // Initialize hooks
+    this._hooks = config.hooks ?? {};
 
     initHealthDashboard(this.server, this._dedup);
   }

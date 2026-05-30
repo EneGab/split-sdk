@@ -13,6 +13,7 @@ import { telemetry } from "../src/telemetry.js";
 import { TelemetryCollector } from "../src/telemetryCollector.js";
 import { DIContainer } from "../src/container.js";
 import { StellarSplitClient } from "../src/client.js";
+import { WalletConnectAdapter } from "../src/adapters/walletconnect.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
