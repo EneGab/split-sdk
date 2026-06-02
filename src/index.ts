@@ -24,6 +24,9 @@ export { CircuitBreakerMonitor, defaultCircuitBreakerMonitor } from "./circuitBr
 export { connectWallet, getPublicKey, signTransaction } from "./wallet.js";
 
 export { checkRPCHealth } from "./health.js";
+export { FallbackChain, FallbackExhaustedError } from "./fallbackChain.js";
+export { groupInvoicesByPattern } from "./smartGrouping.js";
+export type { InvoiceCluster } from "./smartGrouping.js";
 
 export { getOptimisticInvoice } from "./optimistic.js";
 
