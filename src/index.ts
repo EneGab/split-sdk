@@ -77,9 +77,6 @@ export type { PipelineStage, PipelineSink } from "./exportPipeline.js";
 
 export type { WalletAdapter } from "./adapters/types.js";
 export { WalletConnectAdapter } from "./adapters/walletconnect.js";
-export { LedgerAdapter } from "./adapters/ledger.js";
-
-export { subscribeToInvoice } from "./stream.js";
 
 export { validateTransition } from "./stateMachineValidator.js";
 

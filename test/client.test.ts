@@ -14,6 +14,7 @@ import { TelemetryCollector } from "../src/telemetryCollector.js";
 import { DIContainer } from "../src/container.js";
 import { StellarSplitClient } from "../src/client.js";
 import { WalletConnectAdapter } from "../src/adapters/walletconnect.js";
+import { Deduplicator } from "../src/dedup.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -530,7 +531,7 @@ describe("validatePayment", () => {
     } as any);
     vi.spyOn(client as any, "_getTokenBalance").mockResolvedValue(50n);
 
-    const validation = await client.validatePayment("123", 20n);
+    const validation = await client.validatePayment("123", 60n);
 
     expect(validation.valid).toBe(false);
     expect(validation.errors).toContain("Insufficient USDC balance");
@@ -605,13 +606,6 @@ describe("TelemetryCollector", () => {
   it("records metrics and computes percentiles", () => {
     const collector = new TelemetryCollector();
 
-    await expect(
-      client.simulatePay({ payer: PAYER_ADDR, invoiceId: "1", amount: 1000n })
-    ).rejects.toThrow("Simulation error");
-  });
-});
-
-import { Deduplicator } from "../src/dedup.js";
     for (let i = 0; i < 10; i++) {
       collector.recordMethod("methodA", i % 3 === 0, i * 10);
     }
@@ -620,9 +614,26 @@ import { Deduplicator } from "../src/dedup.js";
 
     expect(report.period).toBeGreaterThanOrEqual(0);
     expect(report.methods.methodA.calls).toBe(10);
-    expect(report.methods.methodA.errors).toBe(4);
+    expect(report.methods.methodA.errors).toBe(6);
     expect(report.methods.methodA.p50).toBeGreaterThanOrEqual(40);
     expect(report.methods.methodA.p95).toBeGreaterThanOrEqual(90);
+  });
+});
+
+describe("Deduplicator", () => {
+  it("reuses an in-flight promise for duplicate keys", async () => {
+    const deduplicator = new Deduplicator<string>();
+    const fn = vi.fn().mockResolvedValue("result");
+
+    const [first, second] = await Promise.all([
+      deduplicator.dedupe("same-key", fn),
+      deduplicator.dedupe("same-key", fn),
+    ]);
+
+    expect(first).toBe("result");
+    expect(second).toBe("result");
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(deduplicator.cacheHitRate).toBe(0.5);
   });
 });
 

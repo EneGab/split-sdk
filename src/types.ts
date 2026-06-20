@@ -112,6 +112,14 @@ export interface Invoice {
   prerequisites?: string[];
 }
 
+export interface InvoiceLifecycleHooks {
+  onCreated?: (invoice: Invoice) => void;
+  onPaid?: (invoice: Invoice, payment: Payment) => void;
+  onReleased?: (invoice: Invoice) => void;
+  onRefunded?: (invoice: Invoice) => void;
+  onCancelled?: (invoice: Invoice) => void;
+}
+
 /** Invoice receipt returned after a successful release. */
 export interface InvoiceReceipt {
   /** Deterministic receipt identifier. */
@@ -268,6 +276,8 @@ export interface VersionInfo {
   contractVersion: string;
   sdkVersion: string;
   compatible: boolean;
+}
+
 /** Fee breakdown for a payment amount. */
 export interface FeeBreakdown {
   /** Gross amount before fee deduction. */
