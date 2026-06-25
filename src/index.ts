@@ -253,3 +253,13 @@ export {
   MissingSponsorAccountError,
   InsufficientReserveError,
 } from "./sponsorship.js";
+
+export {
+  createClaimableRefund,
+  getClaimableRefunds,
+  isRefundTransferError,
+} from "./claimableBalanceFallback.js";
+export type {
+  ClaimableRefundResult,
+  ClaimableRefundEntry,
+} from "./claimableBalanceFallback.js";
