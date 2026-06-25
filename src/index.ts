@@ -247,3 +247,9 @@ export type { Sep41TokenCapabilities } from "./sep41Adapter.js";
 
 export { HorizonFallbackReader } from "./horizonFallback.js";
 export type { NormalizedAccount, NormalizedBalance } from "./horizonFallback.js";
+
+export {
+  buildSponsoredOnboarding,
+  MissingSponsorAccountError,
+  InsufficientReserveError,
+} from "./sponsorship.js";
