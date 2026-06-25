@@ -149,6 +149,11 @@ export interface StellarSplitClientConfig {
    * if the primary Soroban RPC endpoint throws or times out.
    */
   horizonUrl?: string;
+  /**
+   * Optional sponsor account address for sponsored-reserve onboarding flows.
+   * Required when calling buildSponsoredOnboarding from src/sponsorship.ts.
+   */
+  sponsorAccount?: string;
 }
 
 /** Network configuration. */
