@@ -101,6 +101,16 @@ import type { RequestPriority } from "./priorityQueue.js";
 import { HorizonFallbackReader } from "./horizonFallback.js";
 import type { NormalizedAccount, NormalizedBalance } from "./horizonFallback.js";
 import { FallbackChain } from "./fallbackChain.js";
+import {
+  createClaimableRefund,
+  getClaimableRefunds,
+  isRefundTransferError,
+} from "./claimableBalanceFallback.js";
+import type {
+  ClaimableRefundResult,
+  ClaimableRefundEntry,
+} from "./claimableBalanceFallback.js";
+import { Asset } from "@stellar/stellar-sdk";
 
 /** A plugin that extends StellarSplitClient with new methods at runtime. */
 export interface StellarSplitPlugin {
@@ -2169,6 +2179,93 @@ export class StellarSplitClient {
       }
       return horizonReader.getAccountBalances(address);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #196 — Claimable-balance fallback for unconfirmed refunds
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Refund an invoice by calling the `refund_invoice` contract method.
+   *
+   * If the underlying token transfer fails because the recipient account does
+   * not exist or has no trustline, and `config.horizonUrl` is configured, the
+   * method automatically falls back to creating a Stellar claimable balance
+   * that the payer can claim once their account is ready.
+   *
+   * A distinguishable log entry (`[StellarSplitClient] claimable-refund fallback`)
+   * is emitted so callers can tell a normal refund from a fallback refund apart.
+   * The returned object includes `fallback: boolean` for programmatic detection.
+   *
+   * @param invoiceId    - ID of the invoice to refund.
+   * @param creator      - Stellar address of the invoice creator (must sign).
+   * @param payerAddress - Stellar address of the payer who receives the refund.
+   *                       Required for the claimable-balance fallback path.
+   */
+  async refundInvoice(
+    invoiceId: string,
+    creator: string,
+    payerAddress?: string
+  ): Promise<{ txHash: string; fallback: false } | ClaimableRefundResult> {
+    const startTime = Date.now();
+
+    try {
+      const operation = this.contract.call(
+        "refund_invoice",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const result = await this._submitTx(creator, operation);
+
+      const invoice = await this.getInvoice(invoiceId).catch(() => null);
+      if (invoice) this._fireOnRefunded(invoice);
+
+      telemetry.recordMethod("refundInvoice", true, Date.now() - startTime);
+      return { txHash: result.txHash, fallback: false };
+    } catch (error) {
+      // Fallback path: if transfer failed due to missing account/trustline and
+      // Horizon is configured, create a claimable balance instead.
+      if (isRefundTransferError(error) && this.config.horizonUrl && payerAddress) {
+        console.warn(
+          `[StellarSplitClient] refundInvoice: transfer failed for invoice ${invoiceId} ` +
+            `(${error instanceof Error ? error.message : String(error)}); ` +
+            `creating claimable-balance fallback for payer ${payerAddress}`
+        );
+
+        try {
+          const invoice = await this.getInvoice(invoiceId).catch(() => null);
+          const amount = invoice?.funded ?? 0n;
+
+          const claimableResult = await createClaimableRefund(
+            payerAddress,
+            amount,
+            Asset.native(),
+            creator,
+            this.config
+          );
+
+          telemetry.recordMethod("refundInvoice", true, Date.now() - startTime);
+          return claimableResult;
+        } catch (fallbackError) {
+          telemetry.recordMethod("refundInvoice", false, Date.now() - startTime);
+          throw fallbackError;
+        }
+      }
+
+      telemetry.recordMethod("refundInvoice", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * List all pending claimable balances on the Stellar network that `payer`
+   * can claim (created by the claimable-balance refund fallback).
+   *
+   * Requires `config.horizonUrl` to be set.
+   *
+   * @param payer - Stellar address of the claimant to query.
+   */
+  async getClaimableRefunds(payer: string): Promise<ClaimableRefundEntry[]> {
+    return getClaimableRefunds(payer, this.config);
   }
 
   // ---------------------------------------------------------------------------
