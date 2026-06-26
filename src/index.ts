@@ -279,3 +279,6 @@ export type {
   ClaimableRefundResult,
   ClaimableRefundEntry,
 } from "./claimableBalanceFallback.js";
+
+export { rolloverInvoice } from "./invoiceRollover.js";
+export type { RolloverResult } from "./types.js";

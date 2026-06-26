@@ -496,3 +496,11 @@ export interface WeightedEndpoint {
   /** Weight for this endpoint (higher = more requests) */
   weight: number;
 }
+
+/** Result of rolling over an expired invoice into a new one. */
+export interface RolloverResult {
+  /** The ID of the newly created invoice. */
+  newInvoiceId: string;
+  /** Transaction hash of the rollover submission. */
+  txHash: string;
+}
