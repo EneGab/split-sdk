@@ -103,6 +103,10 @@ import { computePrediction } from "./predictor.js";
 import type { CompletionPrediction } from "./predictor.js";
 import { PriorityQueue } from "./priorityQueue.js";
 import type { RequestPriority } from "./priorityQueue.js";
+import { IdempotencyManager } from "./idempotency.js";
+import type { IdempotencyConfig } from "./idempotency.js";
+import { validateInvoicePayload } from "./payloadGuard.js";
+import type { PayloadGuardConfig } from "./payloadGuard.js";
 import { HorizonFallbackReader } from "./horizonFallback.js";
 import type { NormalizedAccount, NormalizedBalance } from "./horizonFallback.js";
 import { FallbackChain } from "./fallbackChain.js";
@@ -182,6 +186,15 @@ export interface StellarSplitClientConfig {
    */
   sponsorAccount?: string;
   /**
+   * Optional idempotency configuration for write methods.
+   * When provided, duplicate submissions are detected and short-circuited.
+   */
+  idempotency?: IdempotencyConfig;
+  /**
+   * Optional payload guard configuration for createInvoice.
+   * When provided, invoice payloads are checked before submission.
+   */
+  payloadGuard?: PayloadGuardConfig;
    * Optional list of plugins to register at construction time.
    * Each plugin's `install()` is called during the constructor, and
    * `onInit()` is invoked once all subsystems are ready.
@@ -235,6 +248,7 @@ export class StellarSplitClient {
   private _hooks: InvoiceLifecycleHooks = {};
   private _retryEngine: RetryEngine | null = null;
   private _horizonReader: HorizonFallbackReader | null = null;
+  private _idempotency: IdempotencyManager | null = null;
 
   private get server(): SorobanRpc.Server {
     return this._rpcClient ?? this._standby?.server ?? this._mainServer;
@@ -355,6 +369,10 @@ export class StellarSplitClient {
 
     if (config.horizonUrl) {
       this._horizonReader = new HorizonFallbackReader(config.horizonUrl);
+    }
+
+    if (config.idempotency) {
+      this._idempotency = new IdempotencyManager(config.idempotency);
     }
 
     initHealthDashboard(this.server, this._dedup);
@@ -486,6 +504,10 @@ export class StellarSplitClient {
   ): Promise<{ invoiceId: string; txHash: string }> {
     const startTime = Date.now();
     try {
+      if (this.config.payloadGuard) {
+        validateInvoicePayload(params, this.config.payloadGuard);
+      }
+
       const recipientAddresses = params.recipients.map((r) =>
         nativeToScVal(r.address, { type: "address" })
       );
@@ -1939,12 +1961,36 @@ export class StellarSplitClient {
     priority: RequestPriority = "normal"
   ): Promise<{ txHash: string; returnValue: xdr.ScVal }> {
     return this._queue.enqueue(priority, async () => {
+      if (this._idempotency) {
+        const opXdr = operation.toXDR().toString("base64");
+        const key = this._idempotency.generateKey(sourceAddress, opXdr);
+        const existing = this._idempotency.getResult(key);
+        if (existing) {
+          return {
+            txHash: existing.txHash,
+            returnValue: xdr.ScVal.scvVoid(),
+          };
+        }
+      }
+
       try {
-        return await this._doSubmitTx(sourceAddress, operation);
+        const result = await this._doSubmitTx(sourceAddress, operation);
+        if (this._idempotency) {
+          const opXdr = operation.toXDR().toString("base64");
+          const key = this._idempotency.generateKey(sourceAddress, opXdr);
+          this._idempotency.tryClaim(key, { txHash: result.txHash });
+        }
+        return result;
       } catch (error) {
         if (this._standby) {
           this._standby.failover();
-          return await this._doSubmitTx(sourceAddress, operation);
+          const result = await this._doSubmitTx(sourceAddress, operation);
+          if (this._idempotency) {
+            const opXdr = operation.toXDR().toString("base64");
+            const key = this._idempotency.generateKey(sourceAddress, opXdr);
+            this._idempotency.tryClaim(key, { txHash: result.txHash });
+          }
+          return result;
         }
         throw error;
       }
