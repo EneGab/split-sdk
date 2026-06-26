@@ -611,7 +611,8 @@ export class StellarSplitClient {
         "pay",
         nativeToScVal(params.payer, { type: "address" }),
         nativeToScVal(BigInt(params.invoiceId), { type: "u64" }),
-        nativeToScVal(params.amount, { type: "i128" })
+        nativeToScVal(params.amount, { type: "i128" }),
+        nativeToScVal(params.donateOnFailure ?? false, { type: "bool" })
       );
 
       const submitFn = () => this._submitTx(params.payer, operation);
@@ -2029,6 +2030,7 @@ export class StellarSplitClient {
         return {
           payer: pm.payer as string,
           amount: BigInt(pm.amount as string | number),
+          donateOnFailure: pm.donateOnFailure === true,
         };
       }
     );
