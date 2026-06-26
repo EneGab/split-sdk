@@ -279,3 +279,12 @@ export type {
   ClaimableRefundResult,
   ClaimableRefundEntry,
 } from "./claimableBalanceFallback.js";
+
+export { subscribeToInvoice } from "./sse.js";
+export type {
+  SSEInvoiceEventType,
+  SSEInvoiceEvent,
+  InvoiceEventHandler,
+  SubscribeToInvoiceOptions,
+  EventSourceLike,
+} from "./sse.js";
