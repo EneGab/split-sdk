@@ -85,6 +85,7 @@ import type {
   InvoiceLifecycleHooks,
   PaymentEventRecord,
   PaymentReconciliationReport,
+  RolloverResult,
 } from "./types.js";
 import type { DIContainer, IRPCClient, ICacheStore, IWalletAdapter } from "./container.js";
 import { InvoiceNotFoundError } from "./types.js";
@@ -123,6 +124,7 @@ import type {
   ClaimableRefundEntry,
 } from "./claimableBalanceFallback.js";
 import { Asset } from "@stellar/stellar-sdk";
+import { rolloverInvoice as _rolloverInvoice } from "./invoiceRollover.js";
 
 /** A plugin that extends StellarSplitClient with new methods and lifecycle hooks. */
 export interface StellarSplitPlugin {
@@ -1974,6 +1976,39 @@ export class StellarSplitClient {
     }
 
     return { txHash };
+  }
+
+  /**
+   * Roll an expired invoice over into a new invoice with a fresh deadline,
+   * preserving all original settings automatically via the contract.
+   *
+   * @param invoiceId   - ID of the expired invoice to roll over.
+   * @param newDeadline - Unix timestamp (seconds). Must be > Date.now() / 1000.
+   * @param caller      - Stellar address of the account initiating the rollover.
+   * @returns The new invoice ID and the rollover transaction hash.
+   * @throws If newDeadline is not in the future.
+   */
+  async rolloverInvoice(
+    invoiceId: string,
+    newDeadline: number,
+    caller: string
+  ): Promise<RolloverResult> {
+    const startTime = Date.now();
+    try {
+      const result = await _rolloverInvoice(
+        invoiceId,
+        newDeadline,
+        caller,
+        this.server,
+        this.config,
+        this._adapter
+      );
+      telemetry.recordMethod("rolloverInvoice", true, Date.now() - startTime);
+      return result;
+    } catch (error) {
+      telemetry.recordMethod("rolloverInvoice", false, Date.now() - startTime);
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
