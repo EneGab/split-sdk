@@ -171,6 +171,7 @@ export {
   DeadlinePassedError,
   PaymentExceedsRemainingError,
   InvoiceFrozenError,
+  CoCreatorApprovalNotRequiredError,
   parseSorobanError,
 } from "./errors.js";
 
