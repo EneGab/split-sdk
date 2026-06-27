@@ -62,6 +62,8 @@ export interface Payment {
   ledger?: number;
   /** Unix timestamp in seconds when the payment was made (optional). */
   timestamp?: number;
+  /** When true, funds are donated rather than refunded on invoice failure. */
+  donateOnFailure?: boolean;
 }
 
 /** A payment event reconstructed from contract event history. */
@@ -133,6 +135,16 @@ export interface Invoice {
   parentInvoiceId?: string;
   /** Depth in the clone chain (0 = root, 1 = cloned from root, etc.). */
   cloneDepth?: number;
+  /** The address of the NFT contract used for gating, if any. */
+  nft_gate?: string;
+  /** ID of the next invoice in the forward chain, if any. */
+  forward_invoice_id?: string;
+  /** Unix timestamp after which penalties apply. */
+  penalty_deadline?: number;
+  /** Configured penalty tiers for late payments. */
+  penalty_tiers?: { days_late: number; penalty_bps: number }[];
+  /** List of caller addresses permitted to interact, or null if open. */
+  allowed_callers?: string[] | null;
 }
 
 export interface InvoiceLifecycleHooks {
@@ -195,7 +207,15 @@ export interface PayParams {
   invoiceId: string;
   /** Amount to pay in stroops. */
   amount: bigint;
+  /**
+   * When true, the funds are donated rather than refunded if the invoice
+   * fails to reach its goal. Defaults to false.
+   */
+  donateOnFailure?: boolean;
 }
+
+/** @deprecated Use PayParams instead. */
+export type PaymentOptions = PayParams;
 
 /** Options for paginated queries. */
 export interface PaginationOptions {
@@ -495,4 +515,12 @@ export interface WeightedEndpoint {
   url: string;
   /** Weight for this endpoint (higher = more requests) */
   weight: number;
+}
+
+/** Result of rolling over an expired invoice into a new one. */
+export interface RolloverResult {
+  /** The ID of the newly created invoice. */
+  newInvoiceId: string;
+  /** Transaction hash of the rollover submission. */
+  txHash: string;
 }

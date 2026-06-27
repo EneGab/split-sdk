@@ -30,6 +30,11 @@ import { isFeatureEnabled } from "./flags.js";
 import type { FeatureFlags } from "./flags.js";
 import { checkRPCHealth } from "./health.js";
 import { Deduplicator } from "./dedup.js";
+import { verifyBatchPayments } from "./batchVerifier.js";
+import type {
+  BatchVerificationResult,
+  BatchInvoiceValidation,
+} from "./batchVerifier.js";
 import { initHealthDashboard, recordCall } from "./healthDashboard.js";
 import {
   addRequestInterceptor,
@@ -80,16 +85,26 @@ import type {
   InvoiceLifecycleHooks,
   PaymentEventRecord,
   PaymentReconciliationReport,
+  RolloverResult,
 } from "./types.js";
 import type { DIContainer, IRPCClient, ICacheStore, IWalletAdapter } from "./container.js";
-import { InvoiceNotFoundError } from "./types.js";
+import {
+  CoCreatorApprovalNotRequiredError,
+  ForwardChainTooDeepError,
+  InvoiceFrozenError,
+  InvoiceNotFoundError,
+  InvoiceNotPendingError,
+  parseSorobanError,
+} from "./errors.js";
 import { replayEvents } from "./events.js";
 import { subscribeToInvoice as _subscribeToInvoice } from "./stream.js";
 import { ConnectionPool } from "./connectionPool.js";
 import { snapshotInvoice as _snapshotInvoice } from "./snapshot.js";
 import type { InvoiceSnapshot } from "./snapshot.js";
 import { SimpleCache } from "./cache.js";
-import { parseSorobanError } from "./errors.js";
+import { validateOrThrow } from "./configValidator.js";
+import { extendStorageTtl, buildInvoiceDataLedgerKey } from "./ttlExtension.js";
+import type { TtlExtensionOptions, TtlExtensionResult } from "./ttlExtension.js";
 import { RateLimiter } from "./rateLimiter.js";
 import { DegradationManager } from "./degradation.js";
 import { AuditLogger } from "./auditLogger.js";
@@ -98,13 +113,43 @@ import { computePrediction } from "./predictor.js";
 import type { CompletionPrediction } from "./predictor.js";
 import { PriorityQueue } from "./priorityQueue.js";
 import type { RequestPriority } from "./priorityQueue.js";
+import { IdempotencyManager } from "./idempotency.js";
+import type { IdempotencyConfig } from "./idempotency.js";
+import { validateInvoicePayload } from "./payloadGuard.js";
+import type { PayloadGuardConfig } from "./payloadGuard.js";
+import { HorizonFallbackReader } from "./horizonFallback.js";
+import type { NormalizedAccount, NormalizedBalance } from "./horizonFallback.js";
+import { FallbackChain } from "./fallbackChain.js";
+import {
+  createClaimableRefund,
+  getClaimableRefunds,
+  isRefundTransferError,
+} from "./claimableBalanceFallback.js";
+import type {
+  ClaimableRefundResult,
+  ClaimableRefundEntry,
+} from "./claimableBalanceFallback.js";
+import { Asset } from "@stellar/stellar-sdk";
+import { rolloverInvoice as _rolloverInvoice } from "./invoiceRollover.js";
 
-/** A plugin that extends StellarSplitClient with new methods at runtime. */
+/** A plugin that extends StellarSplitClient with new methods and lifecycle hooks. */
 export interface StellarSplitPlugin {
   /** Unique plugin name — duplicate registrations throw. */
   name: string;
   /** Called with the client instance; attach new methods here. */
-  install(client: StellarSplitClient): void;
+  install?(client: StellarSplitClient): void;
+  /**
+   * Called once after the client has been fully constructed and all internal
+   * subsystems are initialized. Use this for async setup (e.g. connecting to
+   * external services, starting watchers).
+   */
+  onInit?(client: StellarSplitClient): void | Promise<void>;
+  /**
+   * Called during client shutdown, before internal resources are released.
+   * Use this for teardown (e.g. closing connections, clearing intervals).
+   * Plugins are destroyed in reverse registration order.
+   */
+  onDestroy?(client: StellarSplitClient): void | Promise<void>;
 }
 
 /** Configuration for StellarSplitClient. */
@@ -140,6 +185,46 @@ export interface StellarSplitClientConfig {
   hooks?: InvoiceLifecycleHooks;
   /** Optional adaptive retry configuration. When provided, replaces legacy maxRetries for pay/cloneInvoice. */
   retry?: RetryConfig;
+  /**
+   * Optional Horizon API base URL (e.g. "https://horizon.stellar.org").
+   * When provided, read-only account lookups fall back to Horizon automatically
+   * if the primary Soroban RPC endpoint throws or times out.
+   */
+  horizonUrl?: string;
+  /**
+   * Optional sponsor account address for sponsored-reserve onboarding flows.
+   * Required when calling buildSponsoredOnboarding from src/sponsorship.ts.
+   */
+  sponsorAccount?: string;
+  /**
+   * Optional anonymous feature-usage analytics configuration.
+   * When enabled, method call frequencies are collected and periodically flushed
+   * to the provided endpoint. No arguments or PII are ever captured.
+   */
+  usageAnalytics?: {
+    /** Set to true to enable collection. Default: false. */
+    enabled: boolean;
+    /** POST endpoint that receives flush payloads. */
+    endpoint?: string;
+    /** Flush interval in milliseconds. Default: 60_000. */
+    flushIntervalMs?: number;
+  };
+  /**
+   * Optional idempotency configuration for write methods.
+   * When provided, duplicate submissions are detected and short-circuited.
+   */
+  idempotency?: IdempotencyConfig;
+  /**
+   * Optional payload guard configuration for createInvoice.
+   * When provided, invoice payloads are checked before submission.
+   */
+  payloadGuard?: PayloadGuardConfig;
+  /**
+   * Optional list of plugins to register at construction time.
+   * Each plugin's `install()` is called during the constructor, and
+   * `onInit()` is invoked once all subsystems are ready.
+   */
+  plugins?: StellarSplitPlugin[];
 }
 
 /** Network configuration. */
@@ -177,6 +262,7 @@ export class StellarSplitClient {
   private contract: Contract;
   private config: StellarSplitClientConfig;
   private _plugins = new Set<string>();
+  private _pluginInstances: StellarSplitPlugin[] = [];
   private _dedup = new Deduplicator<Invoice>();
   private _cache: SimpleCache<Invoice> | ICacheStore<Invoice> | null = null;
   private _auditLogger: AuditLogger | null = null;
@@ -186,6 +272,8 @@ export class StellarSplitClient {
   private _adapter: WalletAdapter | null = null;
   private _hooks: InvoiceLifecycleHooks = {};
   private _retryEngine: RetryEngine | null = null;
+  private _horizonReader: HorizonFallbackReader | null = null;
+  private _idempotency: IdempotencyManager | null = null;
 
   private get server(): SorobanRpc.Server {
     return this._rpcClient ?? this._standby?.server ?? this._mainServer;
@@ -261,6 +349,7 @@ export class StellarSplitClient {
   }
 
   constructor(config: StellarSplitClientConfig) {
+    validateOrThrow(config);
     this.config = config;
     const primaryUrl = Array.isArray(config.rpcUrl) ? config.rpcUrl[0]! : config.rpcUrl;
     this._rpcClient = config.container?.getRPCClient() ?? null;
@@ -304,7 +393,25 @@ export class StellarSplitClient {
       this._retryEngine = new RetryEngine(config.retry, new TelemetryCollector());
     }
 
+    if (config.horizonUrl) {
+      this._horizonReader = new HorizonFallbackReader(config.horizonUrl);
+    }
+
+    if (config.idempotency) {
+      this._idempotency = new IdempotencyManager(config.idempotency);
+    }
+
     initHealthDashboard(this.server, this._dedup);
+
+    // Register and initialize config-level plugins
+    if (config.plugins) {
+      for (const plugin of config.plugins) {
+        this.registerPlugin(plugin);
+      }
+    }
+    for (const p of this._pluginInstances) {
+      p.onInit?.(this);
+    }
   }
 
   private _logAudit(method: string, params: Record<string, unknown>, success: boolean, durationMs: number): void {
@@ -331,7 +438,8 @@ export class StellarSplitClient {
       throw new Error(`Plugin "${plugin.name}" is already registered.`);
     }
     this._plugins.add(plugin.name);
-    plugin.install(this);
+    this._pluginInstances.push(plugin);
+    plugin.install?.(this);
   }
 
   // ---------------------------------------------------------------------------
@@ -422,6 +530,10 @@ export class StellarSplitClient {
   ): Promise<{ invoiceId: string; txHash: string }> {
     const startTime = Date.now();
     try {
+      if (this.config.payloadGuard) {
+        validateInvoicePayload(params, this.config.payloadGuard);
+      }
+
       const recipientAddresses = params.recipients.map((r) =>
         nativeToScVal(r.address, { type: "address" })
       );
@@ -582,7 +694,8 @@ export class StellarSplitClient {
         "pay",
         nativeToScVal(params.payer, { type: "address" }),
         nativeToScVal(BigInt(params.invoiceId), { type: "u64" }),
-        nativeToScVal(params.amount, { type: "i128" })
+        nativeToScVal(params.amount, { type: "i128" }),
+        nativeToScVal(params.donateOnFailure ?? false, { type: "bool" })
       );
 
       const submitFn = () => this._submitTx(params.payer, operation);
@@ -884,10 +997,92 @@ export class StellarSplitClient {
     });
   }
 
+  private _nftGateCache = new Map<string, { timestamp: number; result: { gated: boolean; hasNft: boolean; contractAddress: string | null } }>();
+
+  /**
+   * Checks the NFT gate status for a given creator address.
+   */
+  async checkNftGate(creatorAddress: string): Promise<{ gated: boolean; hasNft: boolean; contractAddress: string | null }> {
+    const now = Date.now();
+    const cached = this._nftGateCache.get(creatorAddress);
+    if (cached && now - cached.timestamp < 30000) {
+      return cached.result;
+    }
+
+    try {
+      const operation = this.contract.call(
+        "check_nft_gate",
+        nativeToScVal(creatorAddress, { type: "address" })
+      );
+      
+      const raw = await this._simulateView(operation) as any;
+      let result = { gated: false, hasNft: false, contractAddress: null };
+      
+      if (raw && typeof raw === "object") {
+        result = {
+          gated: Boolean(raw.gated),
+          hasNft: Boolean(raw.hasNft || raw.has_nft),
+          contractAddress: (raw.contractAddress || raw.contract_address) ?? null
+        };
+      }
+      
+      this._nftGateCache.set(creatorAddress, { timestamp: now, result });
+      return result;
+    } catch (error) {
+      // If the method doesn't exist or fails, assume no gate
+      const result = { gated: false, hasNft: false, contractAddress: null };
+      this._nftGateCache.set(creatorAddress, { timestamp: now, result });
+      return result;
+    }
+  }
+
+  /**
+   * Resolves the forward chain for an invoice.
+   */
+  async getForwardChain(invoiceId: string): Promise<Array<{ id: string; status: InvoiceStatus; forwardTo?: string }>> {
+    const chain: Array<{ id: string; status: InvoiceStatus; forwardTo?: string }> = [];
+    const visited = new Set<string>();
+    let currentId: string | undefined = invoiceId;
+    let depth = 0;
+
+    while (currentId) {
+      if (depth >= 10) {
+        throw new ForwardChainTooDeepError(`Max chain depth of 10 exceeded starting from invoice ${invoiceId}`);
+      }
+      if (visited.has(currentId)) {
+        throw new Error(`Circular forward chain detected at invoice ${currentId}`);
+      }
+      visited.add(currentId);
+      depth++;
+
+      const invoice = await this.getInvoice(currentId);
+      chain.push({
+        id: invoice.id,
+        status: invoice.status,
+        forwardTo: invoice.forward_invoice_id,
+      });
+
+      currentId = invoice.forward_invoice_id;
+    }
+
+    return chain;
+  }
+
   /**
    * Gracefully shutdown the SDK client, flush pending operations, and close internal resources.
    */
   async shutdown(): Promise<void> {
+    // Tear down plugins in reverse registration order
+    for (const p of this._pluginInstances.reverse()) {
+      try {
+        await p.onDestroy?.(this);
+      } catch (error) {
+        console.error(`[StellarSplitClient] Plugin "${p.name}" onDestroy error:`, error);
+      }
+    }
+    this._pluginInstances = [];
+    this._plugins.clear();
+
     try {
       await this._queue.shutdown();
     } finally {
@@ -1354,6 +1549,35 @@ export class StellarSplitClient {
   }
 
   /**
+   * Validate a batch of proposed payments before submission.
+   *
+   * Resolves all referenced invoices, verifies they are all in "Pending"
+   * status and share the same token, and checks that each payment amount
+   * does not exceed the invoice's remaining amount.
+   *
+   * This is a client-side preflight to avoid wasting gas/fees on a
+   * batch that would be rejected on-chain.
+   *
+   * @param payments - Array of { invoiceId, amount } pairs to verify.
+   * @returns A `BatchVerificationResult` describing per-invoice validity,
+   *          the common token (if uniform), and any aggregated errors.
+   */
+  async verifyBatchPay(payments: BatchPayment[]): Promise<BatchVerificationResult> {
+    const invoiceIds = payments.map((p) => p.invoiceId);
+    const results = await this.resolveBatch(invoiceIds);
+
+    const resolvedInvoices: Invoice[] = [];
+    for (const r of results) {
+      const rr = r as { success: boolean; invoice?: Invoice };
+      if (rr.success && rr.invoice) {
+        resolvedInvoices.push(rr.invoice);
+      }
+    }
+
+    return verifyBatchPayments(resolvedInvoices, payments);
+  }
+
+  /**
    * Validate a proposed payment before submission.
    *
    * @param invoiceId - Invoice ID to validate against.
@@ -1677,6 +1901,39 @@ export class StellarSplitClient {
   }
 
   /**
+   * Bump the storage TTL for contract data entries associated with an invoice.
+   *
+   * Extends the TTL of the invoice's persistent storage entry to the target
+   * ledger sequence, preventing premature archiving.
+   *
+   * @param invoiceId - The invoice ID whose storage entry to extend.
+   * @param extendTo  - Target ledger sequence to extend TTL to.
+   * @param source    - Stellar address of the account submitting the transaction.
+   */
+  async bumpStorageTtl(
+    invoiceId: string,
+    extendTo: number,
+    source: string
+  ): Promise<TtlExtensionResult> {
+    const ledgerKeys = [
+      buildInvoiceDataLedgerKey(this.config.contractId, invoiceId),
+    ];
+    return extendStorageTtl(this.config, { source, extendTo, ledgerKeys });
+  }
+
+  /**
+   * Bump storage TTL for multiple contract data keys in a single transaction.
+   *
+   * @param options - TTL extension parameters including source, target ledger,
+   *                  and an array of ledger keys to extend.
+   */
+  async bumpStorageTtlBatch(
+    options: TtlExtensionOptions
+  ): Promise<TtlExtensionResult> {
+    return extendStorageTtl(this.config, options);
+  }
+
+  /**
    * Switch to a different network.
    *
    * @param network - Network name ('testnet', 'mainnet') or custom NetworkConfig
@@ -1800,6 +2057,146 @@ export class StellarSplitClient {
     return { txHash };
   }
 
+  /**
+   * Roll an expired invoice over into a new invoice with a fresh deadline,
+   * preserving all original settings automatically via the contract.
+   *
+   * @param invoiceId   - ID of the expired invoice to roll over.
+   * @param newDeadline - Unix timestamp (seconds). Must be > Date.now() / 1000.
+   * @param caller      - Stellar address of the account initiating the rollover.
+   * @returns The new invoice ID and the rollover transaction hash.
+   * @throws If newDeadline is not in the future.
+   */
+  async rolloverInvoice(
+    invoiceId: string,
+    newDeadline: number,
+    caller: string
+  ): Promise<RolloverResult> {
+    const startTime = Date.now();
+    try {
+      const result = await _rolloverInvoice(
+        invoiceId,
+        newDeadline,
+        caller,
+        this.server,
+        this.config,
+        this._adapter
+      );
+      telemetry.recordMethod("rolloverInvoice", true, Date.now() - startTime);
+      return result;
+    } catch (error) {
+      telemetry.recordMethod("rolloverInvoice", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #262 — Co-creator approval flow
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check whether an invoice requires co-creator sign-off before release.
+   *
+   * @param invoiceId - The invoice ID to check.
+   * @throws {CoCreatorApprovalNotRequiredError} If the invoice does not require co-creator approval.
+   */
+  private async _needsCoCreatorApproval(invoiceId: string): Promise<void> {
+    const operation = this.contract.call(
+      "needs_co_creator_approval",
+      nativeToScVal(BigInt(invoiceId), { type: "u64" })
+    );
+    const raw = await this._simulateView(operation);
+    if (!raw) {
+      throw new CoCreatorApprovalNotRequiredError(invoiceId);
+    }
+  }
+
+  /**
+   * Submit an approval for an invoice that requires co-creator sign-off.
+   *
+   * The `signer` address must be one of the invoice's co-creators and must
+   * sign the transaction.  Callers should check `getCoCreatorApprovals` to
+   * tally signatures before releasing the invoice.
+   *
+   * @param invoiceId - The invoice ID to approve.
+   * @param signer    - Stellar address of the co-creator submitting approval.
+   * @returns The transaction hash.
+   * @throws {CoCreatorApprovalNotRequiredError} If the invoice does not require co-creator sign-off.
+   */
+  async submitCoCreatorApproval(invoiceId: string, signer: string): Promise<TxResult> {
+    const startTime = Date.now();
+    try {
+      await this._needsCoCreatorApproval(invoiceId);
+
+      const operation = this.contract.call(
+        "submit_co_creator_approval",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+        nativeToScVal(signer, { type: "address" })
+      );
+      const result = await this._submitTx(signer, operation);
+      telemetry.recordMethod("submitCoCreatorApproval", true, Date.now() - startTime);
+      return { txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("submitCoCreatorApproval", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Get the list of addresses that have approved a co-creator approval invoice.
+   *
+   * @param invoiceId - The invoice ID to query.
+   * @returns Array of Stellar addresses that have approved.
+   * @throws {CoCreatorApprovalNotRequiredError} If the invoice does not require co-creator sign-off.
+   */
+  async getCoCreatorApprovals(invoiceId: string): Promise<string[]> {
+    const startTime = Date.now();
+    try {
+      await this._needsCoCreatorApproval(invoiceId);
+
+      const operation = this.contract.call(
+        "get_co_creator_approvals",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const raw = await this._simulateView(operation) as string[];
+      telemetry.recordMethod("getCoCreatorApprovals", true, Date.now() - startTime);
+      return raw;
+    } catch (error) {
+      telemetry.recordMethod("getCoCreatorApprovals", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Revoke a prior co-creator approval for an invoice.
+   *
+   * Only the original signer can revoke their own approval.  The `signer`
+   * address must sign the transaction.
+   *
+   * @param invoiceId - The invoice ID to revoke approval for.
+   * @param signer    - Stellar address of the co-creator revoking their approval.
+   * @returns The transaction hash.
+   * @throws {CoCreatorApprovalNotRequiredError} If the invoice does not require co-creator sign-off.
+   */
+  async revokeCoCreatorApproval(invoiceId: string, signer: string): Promise<TxResult> {
+    const startTime = Date.now();
+    try {
+      await this._needsCoCreatorApproval(invoiceId);
+
+      const operation = this.contract.call(
+        "revoke_co_creator_approval",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+        nativeToScVal(signer, { type: "address" })
+      );
+      const result = await this._submitTx(signer, operation);
+      telemetry.recordMethod("revokeCoCreatorApproval", true, Date.now() - startTime);
+      return { txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("revokeCoCreatorApproval", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
@@ -1835,12 +2232,36 @@ export class StellarSplitClient {
     priority: RequestPriority = "normal"
   ): Promise<{ txHash: string; returnValue: xdr.ScVal }> {
     return this._queue.enqueue(priority, async () => {
+      if (this._idempotency) {
+        const opXdr = operation.toXDR().toString("base64");
+        const key = this._idempotency.generateKey(sourceAddress, opXdr);
+        const existing = this._idempotency.getResult(key);
+        if (existing) {
+          return {
+            txHash: existing.txHash,
+            returnValue: xdr.ScVal.scvVoid(),
+          };
+        }
+      }
+
       try {
-        return await this._doSubmitTx(sourceAddress, operation);
+        const result = await this._doSubmitTx(sourceAddress, operation);
+        if (this._idempotency) {
+          const opXdr = operation.toXDR().toString("base64");
+          const key = this._idempotency.generateKey(sourceAddress, opXdr);
+          this._idempotency.tryClaim(key, { txHash: result.txHash });
+        }
+        return result;
       } catch (error) {
         if (this._standby) {
           this._standby.failover();
-          return await this._doSubmitTx(sourceAddress, operation);
+          const result = await this._doSubmitTx(sourceAddress, operation);
+          if (this._idempotency) {
+            const opXdr = operation.toXDR().toString("base64");
+            const key = this._idempotency.generateKey(sourceAddress, opXdr);
+            this._idempotency.tryClaim(key, { txHash: result.txHash });
+          }
+          return result;
         }
         throw error;
       }
@@ -2000,6 +2421,7 @@ export class StellarSplitClient {
         return {
           payer: pm.payer as string,
           amount: BigInt(pm.amount as string | number),
+          donateOnFailure: pm.donateOnFailure === true,
         };
       }
     );
@@ -2075,6 +2497,168 @@ export class StellarSplitClient {
     }
 
     return chain;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #198 — Horizon fallback for read-only account operations
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch normalised account info (id + sequence number).
+   *
+   * Tries the Soroban RPC endpoint first.  If `horizonUrl` was supplied in
+   * the config and the RPC call throws, the request is automatically retried
+   * against the Horizon REST API via a two-link FallbackChain.
+   *
+   * @param address - Stellar public key of the account.
+   */
+  async getAccount(address: string): Promise<NormalizedAccount> {
+    const rpcFetch = async (): Promise<NormalizedAccount> => {
+      const acc = await this.server.getAccount(address);
+      return { id: acc.accountId(), sequence: acc.sequenceNumber() };
+    };
+
+    if (!this._horizonReader) {
+      return rpcFetch();
+    }
+
+    const horizonReader = this._horizonReader;
+    const chain = new FallbackChain(["rpc", "horizon"], {
+      logger: (attempt) =>
+        console.warn(
+          `[StellarSplitClient] getAccount fallback (${attempt.url}): ${attempt.error}`
+        ),
+    });
+
+    return chain.execute(async (provider) => {
+      if (provider === "rpc") return rpcFetch();
+      return horizonReader.getAccount(address);
+    });
+  }
+
+  /**
+   * Fetch all balances for `address`.
+   *
+   * Balance data is not exposed by the Soroban RPC protocol, so this always
+   * reads from the Horizon API.  A two-link FallbackChain is used so that if
+   * `horizonUrl` is absent the call fails fast with a clear message.
+   *
+   * Requires `horizonUrl` to be set in the client config.
+   *
+   * @param address - Stellar public key of the account.
+   * @throws If no `horizonUrl` was configured.
+   */
+  async getAccountBalances(address: string): Promise<NormalizedBalance[]> {
+    if (!this._horizonReader) {
+      throw new Error(
+        "getAccountBalances requires horizonUrl to be set in StellarSplitClientConfig"
+      );
+    }
+
+    const horizonReader = this._horizonReader;
+    // Soroban RPC has no balance endpoint — the chain falls through to Horizon immediately.
+    const chain = new FallbackChain(["rpc", "horizon"], {
+      logger: (attempt) =>
+        console.warn(
+          `[StellarSplitClient] getAccountBalances fallback (${attempt.url}): ${attempt.error}`
+        ),
+    });
+
+    return chain.execute(async (provider) => {
+      if (provider === "rpc") {
+        throw new Error(
+          "Soroban RPC does not expose account balances; delegating to Horizon"
+        );
+      }
+      return horizonReader.getAccountBalances(address);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #196 — Claimable-balance fallback for unconfirmed refunds
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Refund an invoice by calling the `refund_invoice` contract method.
+   *
+   * If the underlying token transfer fails because the recipient account does
+   * not exist or has no trustline, and `config.horizonUrl` is configured, the
+   * method automatically falls back to creating a Stellar claimable balance
+   * that the payer can claim once their account is ready.
+   *
+   * A distinguishable log entry (`[StellarSplitClient] claimable-refund fallback`)
+   * is emitted so callers can tell a normal refund from a fallback refund apart.
+   * The returned object includes `fallback: boolean` for programmatic detection.
+   *
+   * @param invoiceId    - ID of the invoice to refund.
+   * @param creator      - Stellar address of the invoice creator (must sign).
+   * @param payerAddress - Stellar address of the payer who receives the refund.
+   *                       Required for the claimable-balance fallback path.
+   */
+  async refundInvoice(
+    invoiceId: string,
+    creator: string,
+    payerAddress?: string
+  ): Promise<{ txHash: string; fallback: false } | ClaimableRefundResult> {
+    const startTime = Date.now();
+
+    try {
+      const operation = this.contract.call(
+        "refund_invoice",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const result = await this._submitTx(creator, operation);
+
+      const invoice = await this.getInvoice(invoiceId).catch(() => null);
+      if (invoice) this._fireOnRefunded(invoice);
+
+      telemetry.recordMethod("refundInvoice", true, Date.now() - startTime);
+      return { txHash: result.txHash, fallback: false };
+    } catch (error) {
+      // Fallback path: if transfer failed due to missing account/trustline and
+      // Horizon is configured, create a claimable balance instead.
+      if (isRefundTransferError(error) && this.config.horizonUrl && payerAddress) {
+        console.warn(
+          `[StellarSplitClient] refundInvoice: transfer failed for invoice ${invoiceId} ` +
+            `(${error instanceof Error ? error.message : String(error)}); ` +
+            `creating claimable-balance fallback for payer ${payerAddress}`
+        );
+
+        try {
+          const invoice = await this.getInvoice(invoiceId).catch(() => null);
+          const amount = invoice?.funded ?? 0n;
+
+          const claimableResult = await createClaimableRefund(
+            payerAddress,
+            amount,
+            Asset.native(),
+            creator,
+            this.config
+          );
+
+          telemetry.recordMethod("refundInvoice", true, Date.now() - startTime);
+          return claimableResult;
+        } catch (fallbackError) {
+          telemetry.recordMethod("refundInvoice", false, Date.now() - startTime);
+          throw fallbackError;
+        }
+      }
+
+      telemetry.recordMethod("refundInvoice", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * List all pending claimable balances on the Stellar network that `payer`
+   * can claim (created by the claimable-balance refund fallback).
+   *
+   * Requires `config.horizonUrl` to be set.
+   *
+   * @param payer - Stellar address of the claimant to query.
+   */
+  async getClaimableRefunds(payer: string): Promise<ClaimableRefundEntry[]> {
+    return getClaimableRefunds(payer, this.config);
   }
 
   // ---------------------------------------------------------------------------
