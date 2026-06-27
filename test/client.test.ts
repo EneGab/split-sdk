@@ -1123,6 +1123,58 @@ describe("trackVelocity", () => {
   });
 });
 
+describe("adminFreeze / adminUnfreeze", () => {
+  const admin = Keypair.random().publicKey();
+
+  it("adminFreeze submits transaction and returns txHash", async () => {
+    const client = new StellarSplitClient({
+      rpcUrl: "https://example.com",
+      networkPassphrase: "Test Network",
+      contractId: StrKey.encodeContract(Keypair.random().rawPublicKey()),
+    });
+
+    vi.spyOn(client as any, "_submitTx").mockResolvedValue({
+      txHash: "freeze-tx-hash",
+      returnValue: {} as any,
+    });
+
+    const result = await client.adminFreeze("42", admin);
+    expect(result.txHash).toBe("freeze-tx-hash");
+  });
+
+  it("adminUnfreeze submits transaction and returns txHash", async () => {
+    const client = new StellarSplitClient({
+      rpcUrl: "https://example.com",
+      networkPassphrase: "Test Network",
+      contractId: StrKey.encodeContract(Keypair.random().rawPublicKey()),
+    });
+
+    vi.spyOn(client as any, "_submitTx").mockResolvedValue({
+      txHash: "unfreeze-tx-hash",
+      returnValue: {} as any,
+    });
+
+    const result = await client.adminUnfreeze("42", admin);
+    expect(result.txHash).toBe("unfreeze-tx-hash");
+  });
+
+  it("passes admin address as source to _submitTx", async () => {
+    const client = new StellarSplitClient({
+      rpcUrl: "https://example.com",
+      networkPassphrase: "Test Network",
+      contractId: StrKey.encodeContract(Keypair.random().rawPublicKey()),
+    });
+
+    const submitSpy = vi.spyOn(client as any, "_submitTx").mockResolvedValue({
+      txHash: "tx",
+      returnValue: {} as any,
+    });
+
+    await client.adminFreeze("42", admin);
+    expect(submitSpy).toHaveBeenCalledWith(admin, expect.anything());
+  });
+});
+
 describe("getPaymentCooldown", () => {
   const payerAddr = Keypair.random().publicKey();
 

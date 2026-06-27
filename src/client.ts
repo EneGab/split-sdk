@@ -2237,6 +2237,58 @@ export class StellarSplitClient {
   }
 
   // ---------------------------------------------------------------------------
+  // Admin freeze / unfreeze
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Freeze an invoice. Only an authorized admin keypair can call this.
+   * The `admin` address must sign the transaction.
+   *
+   * @param invoiceId - The invoice ID to freeze.
+   * @param admin     - Stellar address of the admin (must sign).
+   * @returns The transaction hash.
+   */
+  async adminFreeze(invoiceId: string, admin: string): Promise<TxResult> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "admin_freeze",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const result = await this._submitTx(admin, operation);
+      telemetry.recordMethod("adminFreeze", true, Date.now() - startTime);
+      return { txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("adminFreeze", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Unfreeze a previously frozen invoice. Only an authorized admin keypair can call this.
+   * The `admin` address must sign the transaction.
+   *
+   * @param invoiceId - The invoice ID to unfreeze.
+   * @param admin     - Stellar address of the admin (must sign).
+   * @returns The transaction hash.
+   */
+  async adminUnfreeze(invoiceId: string, admin: string): Promise<TxResult> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "admin_unfreeze",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const result = await this._submitTx(admin, operation);
+      telemetry.recordMethod("adminUnfreeze", true, Date.now() - startTime);
+      return { txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("adminUnfreeze", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
 
