@@ -212,6 +212,12 @@ export type {
   InvoiceExt,
   PaymentOptions,
   RolloverResult,
+  ScheduledReleaseCountdown,
+  DisputeStatus,
+  AuctionBid,
+  AuctionInfo,
+  TimelockAction,
+  QueueActionParams,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
 
