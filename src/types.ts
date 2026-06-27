@@ -135,6 +135,61 @@ export interface Invoice {
   parentInvoiceId?: string;
   /** Depth in the clone chain (0 = root, 1 = cloned from root, etc.). */
   cloneDepth?: number;
+  /** Unix timestamp in seconds when a scheduled release should fire. */
+  scheduledReleaseDate?: number;
+}
+
+/** Countdown until a scheduled release fires. */
+export interface ScheduledReleaseCountdown {
+  days: number;
+  hours: number;
+  minutes: number;
+  seconds: number;
+  overdue: boolean;
+}
+
+/** Status of a dispute on an invoice. */
+export interface DisputeStatus {
+  invoiceId: string;
+  disputed: boolean;
+  arbiter: string;
+  resolved: boolean;
+  resolution: "approved" | "rejected" | null;
+}
+
+/** A single bid placed in an auction. */
+export interface AuctionBid {
+  bidder: string;
+  amount: bigint;
+  timestamp: number;
+}
+
+/** Information about an active auction. */
+export interface AuctionInfo {
+  invoiceId: string;
+  active: boolean;
+  highestBid: AuctionBid | null;
+  endTime: number;
+}
+
+/** Status of a timelock queued action. */
+export interface TimelockAction {
+  actionId: string;
+  actionType: string;
+  target: string;
+  value: bigint;
+  eta: number;
+  executed: boolean;
+  cancelled: boolean;
+}
+
+/** Parameters for queuing a timelock action. */
+export interface QueueActionParams {
+  caller: string;
+  actionType: string;
+  target: string;
+  value: bigint;
+  eta: number;
 }
 
 export interface InvoiceLifecycleHooks {
