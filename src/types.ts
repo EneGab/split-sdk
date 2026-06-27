@@ -157,6 +157,21 @@ export interface DisputeStatus {
   resolution: "approved" | "rejected" | null;
 }
 
+/** A single bid placed in an auction. */
+export interface AuctionBid {
+  bidder: string;
+  amount: bigint;
+  timestamp: number;
+}
+
+/** Information about an active auction. */
+export interface AuctionInfo {
+  invoiceId: string;
+  active: boolean;
+  highestBid: AuctionBid | null;
+  endTime: number;
+}
+
 export interface InvoiceLifecycleHooks {
   onCreated?: (invoice: Invoice) => void;
   onPaid?: (invoice: Invoice, payment: Payment) => void;

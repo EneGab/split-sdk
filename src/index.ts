@@ -213,6 +213,8 @@ export type {
   PaymentOptions,
   ScheduledReleaseCountdown,
   DisputeStatus,
+  AuctionBid,
+  AuctionInfo,
 } from "./types.js";
 export { InvalidTransitionError } from "./types.js";
 

@@ -54,6 +54,7 @@ import { generatePaymentProof } from "./proof.js";
 import type {
   ArchivedInvoice,
   ArbiterVote,
+  AuctionInfo,
   DisputeStatus,
   BatchPayment,
   BatchResolveResult,
@@ -2205,6 +2206,95 @@ export class StellarSplitClient {
     const seconds = diff % 60;
 
     return { days, hours, minutes, seconds, overdue: false };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auction workflow
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Place a bid on an invoice that has auction_on_expiry enabled.
+   * @param bidder - Stellar address of the bidder (must sign).
+   * @param invoiceId - The ID of the invoice to bid on.
+   * @param amount - Bid amount in stroops.
+   * @returns The transaction hash.
+   */
+  async placeBid(
+    bidder: string,
+    invoiceId: string,
+    amount: bigint
+  ): Promise<TxResult> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "place_bid",
+        nativeToScVal(bidder, { type: "address" }),
+        nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+        nativeToScVal(amount, { type: "i128" })
+      );
+      const result = await this._submitTx(bidder, operation);
+      telemetry.recordMethod("placeBid", true, Date.now() - startTime);
+      return { txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("placeBid", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Settle an auction for an invoice, releasing funds to the winning bidder.
+   * @param caller - Stellar address of the caller (must sign).
+   * @param invoiceId - The ID of the invoice to settle.
+   * @returns The transaction hash.
+   */
+  async settleAuction(caller: string, invoiceId: string): Promise<TxResult> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "settle_auction",
+        nativeToScVal(caller, { type: "address" }),
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const result = await this._submitTx(caller, operation);
+      telemetry.recordMethod("settleAuction", true, Date.now() - startTime);
+      return { txHash: result.txHash };
+    } catch (error) {
+      telemetry.recordMethod("settleAuction", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  /**
+   * Get the auction state for an invoice.
+   * @param invoiceId - The ID of the invoice to query.
+   * @returns Auction information including active state, highest bid, and end time.
+   */
+  async getAuctionInfo(invoiceId: string): Promise<AuctionInfo> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "get_auction_info",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" })
+      );
+      const raw = await this._simulateView(operation) as Record<string, unknown>;
+      const info: AuctionInfo = {
+        invoiceId,
+        active: Boolean(raw.active),
+        highestBid: raw.highestBid
+          ? {
+              bidder: (raw.highestBid as Record<string, unknown>).bidder as string,
+              amount: BigInt((raw.highestBid as Record<string, unknown>).amount as string | number),
+              timestamp: Number((raw.highestBid as Record<string, unknown>).timestamp),
+            }
+          : null,
+        endTime: Number(raw.endTime ?? 0),
+      };
+      telemetry.recordMethod("getAuctionInfo", true, Date.now() - startTime);
+      return info;
+    } catch (error) {
+      telemetry.recordMethod("getAuctionInfo", false, Date.now() - startTime);
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
