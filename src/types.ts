@@ -344,22 +344,6 @@ export interface InvoiceGroup {
 }
 
 /** Invoice receipt returned after a successful release. */
-export interface InvoiceReceipt {
-  /** Deterministic receipt identifier. */
-  receiptId: string;
-  /** Invoice ID this receipt belongs to. */
-  invoiceId: string;
-  /** Address that created the invoice. */
-  creator: string;
-  /** Ordered list of recipients with their owed amounts. */
-  recipients: Recipient[];
-  /** All payments recorded on-chain. */
-  payments: Payment[];
-  /** Total amount paid in stroops. */
-  totalAmount: bigint;
-  /** Timestamp when the receipt was generated. */
-  releasedAt: number;
-}
 
 /** An invoice template for reuse. */
 export interface InvoiceTemplate {
@@ -426,13 +410,6 @@ export interface VersionInfo {
 }
 
 /** Optional lifecycle hooks fired by StellarSplitClient methods. */
-export interface InvoiceLifecycleHooks {
-  onCreated?: (invoice: Invoice) => void;
-  onPaid?: (invoice: Invoice, payment: Payment) => void;
-  onReleased?: (invoice: Invoice) => void;
-  onRefunded?: (invoice: Invoice) => void;
-  onCancelled?: (invoice: Invoice) => void;
-}
 
 /** Fee breakdown for a payment amount. */
 export interface FeeBreakdown {
@@ -696,6 +673,7 @@ export interface CompletionProof {
   totalAmount: bigint;
   /** On-chain cert hash to verify against. */
   cert_hash: string;
+}
 /** Current velocity-window state for a payer on a velocity-limited invoice. */
 export interface VelocityWindowStatus {
   /** Unix timestamp (seconds) when the current window opened. */
@@ -791,49 +769,3 @@ export interface SetCrossChainRefParams {
   ref: CrossChainRef;
 }
 
-export interface ScheduledReleaseCountdown {
-  days: number;
-  hours: number;
-  minutes: number;
-  seconds: number;
-  overdue: boolean;
-}
-
-export interface DisputeStatus {
-  invoiceId: string;
-  disputed: boolean;
-  arbiter: string;
-  resolved: boolean;
-  resolution: "approved" | "rejected" | null;
-}
-
-export interface AuctionBid {
-  bidder: string;
-  amount: bigint;
-  timestamp: number;
-}
-
-export interface AuctionInfo {
-  invoiceId: string;
-  active: boolean;
-  highestBid: AuctionBid | null;
-  endTime: number;
-}
-
-export interface QueueActionParams {
-  caller: string;
-  actionType: string;
-  target: string;
-  value: bigint;
-  eta: number;
-}
-
-export interface TimelockAction {
-  actionId: string;
-  actionType: string;
-  target: string;
-  value: bigint;
-  eta: number;
-  executed: boolean;
-  cancelled: boolean;
-}
