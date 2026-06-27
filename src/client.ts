@@ -86,6 +86,7 @@ import type {
   PaymentEventRecord,
   PaymentReconciliationReport,
   RolloverResult,
+  VelocityStatus,
 } from "./types.js";
 import type { DIContainer, IRPCClient, ICacheStore, IWalletAdapter } from "./container.js";
 import {
@@ -2198,6 +2199,63 @@ export class StellarSplitClient {
   }
 
   // ---------------------------------------------------------------------------
+  // Issue #285 — Velocity limit status
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check the current velocity-window state for a payer on a specific invoice.
+   *
+   * Reads the on-chain window state via RPC and reports how much the payer can
+   * still pay in the current window. If the invoice has no velocity limit
+   * configured, returns `{ limited: false }`.
+   *
+   * @param invoiceId    - The invoice ID to check.
+   * @param payerAddress - Stellar address of the payer.
+   * @returns The active window state, or `{ limited: false }` if unlimited.
+   */
+  async getVelocityStatus(
+    invoiceId: string,
+    payerAddress: string,
+  ): Promise<VelocityStatus> {
+    const startTime = Date.now();
+    try {
+      const operation = this.contract.call(
+        "get_velocity_status",
+        nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+        nativeToScVal(payerAddress, { type: "address" }),
+      );
+      const raw = await this._simulateView(operation);
+
+      telemetry.recordMethod("getVelocityStatus", true, Date.now() - startTime);
+
+      // No velocity limit configured: contract returns void/null.
+      if (raw === null || raw === undefined) {
+        return { limited: false };
+      }
+
+      const state = raw as Record<string, unknown>;
+      const windowStart = Number(state.window_start ?? state.windowStart ?? 0);
+      const windowEnd = Number(state.window_end ?? state.windowEnd ?? 0);
+      const amountUsed = toBigInt(state.amount_used ?? state.amountUsed);
+      const limitPerWindow = toBigInt(
+        state.limit_per_window ?? state.limitPerWindow,
+      );
+      const remaining = limitPerWindow - amountUsed;
+
+      return {
+        windowStart,
+        windowEnd,
+        amountUsed,
+        limitPerWindow,
+        amountRemaining: remaining > 0n ? remaining : 0n,
+      };
+    } catch (error) {
+      telemetry.recordMethod("getVelocityStatus", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
 
@@ -2722,4 +2780,12 @@ export class StellarSplitClient {
     return successful.reduce((best, cur) => cur.ledger > best.ledger ? cur : best);
   }
 
+}
+
+/** Coerce a native-decoded scalar (bigint | number | string) into a bigint, defaulting to 0n. */
+function toBigInt(value: unknown): bigint {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return BigInt(Math.trunc(value));
+  if (typeof value === "string" && value !== "") return BigInt(value);
+  return 0n;
 }
