@@ -13,6 +13,15 @@ export type {
   TxResult,
   StellarSplitPlugin,
 } from "./client.js";
+
+export { PluginRegistry, LoggingPlugin } from "./plugin.js";
+export type { SdkPlugin, SdkMethodName, PluginArgs, PluginResult } from "./plugin.js";
+
+export {
+  serializeInvoiceTemplate,
+  deserializeInvoiceTemplate,
+  ValidationError,
+} from "./invoiceTemplate.js";
 export { MultiTenantClient } from "./multiTenant.js";
 export { ProfilerSession } from "./profiler.js";
 export type { ProfileReport } from "./profiler.js";
