@@ -278,6 +278,19 @@ export async function generatePaymentProof(
   return m.generatePaymentProof(txHash, config);
 }
 
+// Payment receipt generator
+export {
+  compilePaymentReceipt,
+  generatePaymentReceipt,
+  serializePaymentReceipt,
+  deserializePaymentReceipt,
+} from "./receipt.js";
+export type {
+  PaymentReceipt,
+  PaymentReceiptJSON,
+  InvoiceFetcher,
+} from "./receipt.js";
+
 // Merkle proof functionality
 export { generateMerkleProof, verifyMerkleProof } from "./merkle.js";
 export type { MerkleProof } from "./merkle.js";
@@ -356,7 +369,7 @@ export {
 } from "./configValidator.js";
 export type {
   ConfigValidation,
-  ConfigValidationError as ConfigValidationErrorType,
+  ConfigValidationErrorType,
 } from "./configValidator.js";
 
 export { FundingVelocityAlert } from "./velocityAlert.js";
