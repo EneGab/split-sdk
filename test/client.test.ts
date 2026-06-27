@@ -1123,6 +1123,66 @@ describe("trackVelocity", () => {
   });
 });
 
+describe("getPaymentHistory", () => {
+  it("fetches all 8 shards in parallel and merges results sorted chronologically", async () => {
+    const client = new StellarSplitClient({
+      rpcUrl: "https://example.com",
+      networkPassphrase: "Test Network",
+      contractId: StrKey.encodeContract(Keypair.random().rawPublicKey()),
+    });
+
+    const payer1 = Keypair.random().publicKey();
+    const payer2 = Keypair.random().publicKey();
+    const payer3 = Keypair.random().publicKey();
+    const payer4 = Keypair.random().publicKey();
+
+    const shard0 = [
+      { payer: payer1, amount: "10000000", ledger: 100, timestamp: 1000 },
+      { payer: payer2, amount: "5000000", ledger: 101, timestamp: 1001 },
+    ];
+    const shard1 = [
+      { payer: payer3, amount: "2000000", ledger: 150, timestamp: 1500 },
+    ];
+    const shard7 = [
+      { payer: payer4, amount: "8000000", ledger: 200, timestamp: 2000 },
+    ];
+    const emptyShard: unknown[] = [];
+
+    const allCalls = [
+      Promise.resolve(shard0),
+      Promise.resolve(shard1),
+      ...Array.from({ length: 5 }, () => Promise.resolve(emptyShard)),
+      Promise.resolve(shard7),
+    ];
+
+    let callIndex = 0;
+    vi.spyOn(client as any, "_simulateView").mockImplementation(() => {
+      return allCalls[callIndex++] ?? Promise.resolve(emptyShard);
+    });
+
+    const payments = await client.getPaymentHistory("42");
+
+    expect(payments).toHaveLength(4);
+    expect(payments[0]!.payer).toBe(payer1);
+    expect(payments[1]!.payer).toBe(payer2);
+    expect(payments[2]!.payer).toBe(payer3);
+    expect(payments[3]!.payer).toBe(payer4);
+  });
+
+  it("handles missing shards gracefully", async () => {
+    const client = new StellarSplitClient({
+      rpcUrl: "https://example.com",
+      networkPassphrase: "Test Network",
+      contractId: StrKey.encodeContract(Keypair.random().rawPublicKey()),
+    });
+
+    vi.spyOn(client as any, "_simulateView").mockResolvedValue([]);
+
+    const payments = await client.getPaymentHistory("42");
+    expect(payments).toEqual([]);
+  });
+});
+
 describe("adminFreeze / adminUnfreeze", () => {
   const admin = Keypair.random().publicKey();
 

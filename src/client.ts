@@ -2237,6 +2237,67 @@ export class StellarSplitClient {
   }
 
   // ---------------------------------------------------------------------------
+  // Payment history (sharded)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch the full payment history for an invoice by querying all 8 payment
+   * shards in parallel. Returns a merged, chronologically sorted payment list.
+   *
+   * The contract stores payments across up to 8 shards per invoice (issue #177)
+   * to work around Soroban per-contract-entry size limits.
+   *
+   * @param invoiceId - The invoice ID to fetch payments for.
+   * @returns All payments merged and sorted by timestamp (ascending).
+   */
+  async getPaymentHistory(invoiceId: string): Promise<Payment[]> {
+    const startTime = Date.now();
+    try {
+      const NUM_SHARDS = 8;
+
+      const operations = Array.from({ length: NUM_SHARDS }, (_, i) =>
+        this.contract.call(
+          "get_payment_shard",
+          nativeToScVal(BigInt(invoiceId), { type: "u64" }),
+          nativeToScVal(i, { type: "u32" })
+        )
+      );
+
+      const shardResults = await Promise.allSettled(
+        operations.map((op) => this._simulateView(op))
+      );
+
+      const allPayments: Payment[] = [];
+      for (const result of shardResults) {
+        if (result.status === "fulfilled" && Array.isArray(result.value)) {
+          for (const raw of result.value as unknown[]) {
+            const p = raw as Record<string, unknown>;
+            allPayments.push({
+              payer: (p.payer ?? p.payer) as string,
+              amount: BigInt((p.amount ?? p.amount ?? 0) as string | number),
+              ledger: p.ledger != null ? Number(p.ledger) : undefined,
+              timestamp: p.timestamp != null ? Number(p.timestamp) : undefined,
+              donateOnFailure: Boolean(p.donateOnFailure ?? p.donate_on_failure ?? false),
+            });
+          }
+        }
+      }
+
+      allPayments.sort((a, b) => {
+        const ta = a.timestamp ?? a.ledger ?? 0;
+        const tb = b.timestamp ?? b.ledger ?? 0;
+        return ta - tb;
+      });
+
+      telemetry.recordMethod("getPaymentHistory", true, Date.now() - startTime);
+      return allPayments;
+    } catch (error) {
+      telemetry.recordMethod("getPaymentHistory", false, Date.now() - startTime);
+      throw error;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Admin freeze / unfreeze
   // ---------------------------------------------------------------------------
 
