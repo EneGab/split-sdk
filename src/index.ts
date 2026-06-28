@@ -137,6 +137,8 @@ export {
   isTrancheProgressError,
   isRefundGraceError,
   isChannelReconciliationError,
+  TooManySubscriptionsError,
+  isTooManySubscriptionsError,
 } from "./errors.js";
 export { getScheduledReleaseCountdown } from "./client.js";
 export { verifyCompletionProof } from "./client.js";
@@ -431,6 +433,7 @@ export type {
   SubscribeToInvoiceOptions,
   EventSourceLike,
 } from "./sse.js";
+export type { PollingInvoiceEventHandler } from "./stream.js";
 export {
   bundleDisputeEvidence,
   computeBundleChecksum,

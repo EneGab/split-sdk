@@ -141,6 +141,7 @@ import { subscribeToInvoice as _subscribeToInvoiceSSE } from "./sse.js";
 import type {
   InvoiceEventHandler,
   SubscribeToInvoiceOptions,
+  SSEInvoiceEvent,
 } from "./sse.js";
 import { ConnectionPool } from "./connectionPool.js";
 import { snapshotInvoice as _snapshotInvoice } from "./snapshot.js";
@@ -1977,24 +1978,41 @@ export class StellarSplitClient {
   // Issue #2 / #282 — subscribeToInvoice
   // ---------------------------------------------------------------------------
 
-  /**
-   * Subscribe to real-time invoice events via server-sent events (SSE).
-   *
-   * Pass a single handler function to receive typed `InvoiceEvent` objects
-   * (`payment_received`, `invoice_released`, `invoice_refunded`) without
-   * polling. The connection reconnects automatically with exponential backoff
-   * on drops. The SSE base URL defaults to the client's `horizonUrl` config and
-   * can be overridden via `options.baseUrl`.
-   *
-   * @param invoiceId - The invoice ID to watch.
-   * @param handler   - Called with each typed `InvoiceEvent`.
-   * @param options   - Optional SSE options (base URL, backoff, EventSource factory).
-   * @returns Unsubscribe function that permanently stops the stream.
-   */
+/**
+    * Subscribe to live invoice events via server-sent events (SSE).
+    *
+    * Pass a single handler function to receive typed `InvoiceEvent` objects
+    * (`payment_received`, `invoice_released`, `invoice_refunded`) without
+    * polling. The connection reconnects automatically with exponential backoff
+    * on drops. The SSE base URL defaults to the client's `horizonUrl` config and
+    * can be overridden via `options.baseUrl`.
+    *
+    * @param invoiceId - The invoice ID to watch.
+    * @param handler   - Called with each single typed `InvoiceEvent` (SSE mode).
+    * @param options   - Optional SSE options (base URL, backoff, EventSource factory).
+    * @returns Unsubscribe function that permanently stops the stream.
+    */
   subscribeToInvoice(
     invoiceId: string,
     handler: InvoiceEventHandler,
     options?: Partial<SubscribeToInvoiceOptions>
+  ): () => void;
+  /**
+   * Subscribe to live invoice events via Soroban RPC polling.
+   *
+   * Polls every 5 seconds initially; backs off to 30 seconds after 3 unchanged polls.
+   * Resets to 5 seconds immediately when a change is detected. Handler receives
+   * InvoiceEvent[] containing only events since the last poll.
+   *
+   * @param invoiceId - The invoice ID to watch.
+   * @param handler   - Called with InvoiceEvent[] (events since last poll).
+   * @param intervalMs - Poll interval in milliseconds (default: 5000).
+   * @returns Unsubscribe function that stops the stream.
+   */
+  subscribeToInvoice(
+    invoiceId: string,
+    handler: (events: SSEInvoiceEvent[]) => void,
+    intervalMs?: number
   ): () => void;
   /**
    * Subscribe to live invoice events via Soroban RPC event polling.
@@ -2011,12 +2029,24 @@ export class StellarSplitClient {
   ): () => void;
   subscribeToInvoice(
     invoiceId: string,
-    handlerOrCallbacks: InvoiceEventHandler | InvoiceEventCallbacks,
+    handlerOrCallbacks: InvoiceEventHandler | InvoiceEventCallbacks | ((events: SSEInvoiceEvent[]) => void),
     optionsOrInterval?: Partial<SubscribeToInvoiceOptions> | number
   ): () => void {
-    // A function handler selects the SSE transport; a callbacks object selects
-    // the legacy RPC-polling transport.
+    // A function handler with options object selects the SSE transport.
+    // A function handler with number interval selects the RPC polling transport (new API).
+    // A callbacks object selects the legacy RPC-polling transport.
     if (typeof handlerOrCallbacks === "function") {
+      // If second arg is a number, treat as polling
+      if (typeof optionsOrInterval === "number") {
+        return _subscribeToInvoice(
+          this.server,
+          this.config.contractId,
+          invoiceId,
+          handlerOrCallbacks as (events: SSEInvoiceEvent[]) => void,
+          optionsOrInterval
+        );
+      }
+      // Otherwise SSE mode
       const options =
         (optionsOrInterval as Partial<SubscribeToInvoiceOptions> | undefined) ?? {};
       const baseUrl = options.baseUrl ?? this.config.horizonUrl;
@@ -2025,7 +2055,7 @@ export class StellarSplitClient {
           "subscribeToInvoice (SSE) requires a base URL: set `horizonUrl` in the client config or pass `{ baseUrl }` in options.",
         );
       }
-      return _subscribeToInvoiceSSE(invoiceId, handlerOrCallbacks, {
+      return _subscribeToInvoiceSSE(invoiceId, handlerOrCallbacks as InvoiceEventHandler, {
         ...options,
         baseUrl,
       });
@@ -2036,7 +2066,7 @@ export class StellarSplitClient {
       this.config.contractId,
       invoiceId,
       handlerOrCallbacks,
-      optionsOrInterval as number | undefined
+      undefined
     );
   }
 

@@ -1030,3 +1030,20 @@ export function isRefundGraceError(err: unknown): err is RefundGraceError {
 export function isChannelReconciliationError(err: unknown): err is ChannelReconciliationError {
   return err instanceof ChannelReconciliationError;
 }
+
+/** Thrown when too many concurrent invoice subscriptions are created. */
+export class TooManySubscriptionsError extends StellarSplitError {
+  constructor(maxSubscriptions: number = 10) {
+    super(
+      `Maximum concurrent subscriptions (${maxSubscriptions}) exceeded`,
+      "TOO_MANY_SUBSCRIPTIONS",
+      { maxSubscriptions }
+    );
+    this.name = "TooManySubscriptionsError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export function isTooManySubscriptionsError(err: unknown): err is TooManySubscriptionsError {
+  return err instanceof TooManySubscriptionsError;
+}
