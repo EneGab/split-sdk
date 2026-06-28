@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
+- Add SDK event subscription via polling with exponential backoff (closes #359)
+  - `subscribeToInvoice(invoiceId, handler, intervalMs)` polls contract for events
+  - Polls every 5 seconds initially; backs off to 30 seconds after 3 unchanged polls
+  - Resets to 5 seconds immediately when a change is detected
+  - Handler receives `InvoiceEvent[]` containing only events since the last poll
+  - Polling pauses when `document.hidden` is true (Page Visibility API); resumes on focus
+  - Works in Node.js environments (no document dependency unless available)
+  - Maximum 10 concurrent subscriptions; 11th throws `TooManySubscriptionsError`
 - Add typed error hierarchy for SDK error codes (closes #358)
   - Base class `StellarSplitError` with `code: string` and `context?: Record<string, unknown>` properties
   - Error subclasses: `InvoiceNotFoundError`, `DeadlinePassedError`, `InsufficientBalanceError`, `WalletNotConnectedError`, `RpcError`, `ContractError`, `ValidationError`, `InvoiceNotPendingError`, `InvoiceFrozenError`, `CoCreatorApprovalNotRequiredError`, `ChainTooDeepError`, `CircularPrerequisiteError`, `ForwardChainTooDeepError`, `UnauthorizedError`, `CircularForwardChainError`, `CircuitOpenError`, `WebhookEventNotFoundError`, `PluginAlreadyRegisteredError`, `InvalidBatchSizeError`, `InvoiceNotReleasedError`, `TransactionFailedError`, `TransactionNotConfirmedError`, `SimulationFailedError`, `NoReturnValueError`, `UnknownNetworkError`, `InsufficientSignaturesError`, `CloneChainTooDeepError`, `NoPendingPayoutError`, `InvalidAttestationError`, `InvoiceFlowFetcherNotRegisteredError`, `InvoiceFetcherNotRegisteredError`, `UnknownEndpointError`, `RpcUnavailableError`, `DiscoveryFetchError`, `PayerAddressRequiredError`, `SignerFailedError`, `NoSignerProvidedError`, `ConnectionPoolConfigError`, `ConnectionPoolDisposedError`, `SearchFailedError`, `TransactionNotSuccessfulError`, `QueueFailedError`, `UnknownExportFormatError`, `DexQuoteFailedError`, `TtlExtensionFailedError`, `TestHarnessNotInitializedError`, `UnknownTestWalletError`, `RelationshipTrackerNotInitializedError`, `FriendbotFailedError`, `DisputeEvidenceError`, `OraclePriceError`, `Sep41AdapterError`, `TrancheProgressError`, `RefundGraceError`, `ChannelReconciliationError`
@@ -29,8 +37,8 @@ All notable changes to this project will be documented in this file.
 - Add RPC health checker (`49b16f0`)
 - Build invoice template client methods (`af14e4f`)
 - Add USDC balance poller (`65fbb92`)
-- add StellarSplitClient, Freighter wallet adapter, and public index (`3e4ad8e`)
-- add Invoice/Payment/Recipient types and USDC amount utilities (`012b9a2`)
+- Add StellarSplitClient, Freighter wallet adapter, and public index (`3e4ad8e`)
+- Add Invoice/Payment/Recipient types and USDC amount utilities (`012b9a2`)
 
 ### Migration Guide: Typed Error Hierarchy
 
