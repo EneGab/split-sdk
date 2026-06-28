@@ -251,6 +251,18 @@ export interface StellarSplitClientConfig {
    * `onInit()` is invoked once all subsystems are ready.
    */
   plugins?: StellarSplitPlugin[];
+  /**
+   * Optional Soroban RPC connection pool size (1-5). When omitted or set to 1,
+   * the SDK uses a single underlying RPC connection (no pool). When `>= 2`,
+   * the SDK multiplexes requests across that many persistent connections
+   * to the primary RPC endpoint using least-busy selection; idle connections
+   * are recycled after 60 seconds (see issue #360).
+   *
+   * When `rpcUrl` is an array (multi-endpoint / `WarmStandby` failover), the
+   * pool is automatically disabled to avoid competing with the standby
+   * selector. Use one or the other, not both.
+   */
+  rpcPoolSize?: number;
 }
 
 /** Network configuration. */
@@ -309,7 +321,9 @@ function _computeCountdown(target: number): ScheduledReleaseCountdown {
  * @returns ScheduledReleaseCountdown or null.
  */
 export function getScheduledReleaseCountdown(invoice: Invoice): ScheduledReleaseCountdown | null {
-  const ts = invoice.scheduled_release_at ?? invoice.scheduledReleaseDate;
+  const ts =
+    (invoice as { scheduled_release_at?: number }).scheduled_release_at ??
+    invoice.scheduledReleaseDate;
   if (ts === undefined) return null;
   return _computeCountdown(ts);
 }
@@ -360,10 +374,23 @@ export class StellarSplitClient {
   private _retryEngine: RetryEngine | null = null;
   private _horizonReader: HorizonFallbackReader | null = null;
   private _idempotency: IdempotencyManager | null = null;
+  private _pool: ConnectionPool | null = null;
+  /**
+   * Effective pool size chosen at construction (or 0 when pooling is off).
+   * Cached separately from `config` because {@link NetworkConfig} (used by
+   * `switchNetwork`) does not carry `rpcPoolSize`, so reading from
+   * `this.config.rpcPoolSize` after a switch would silently disable pooling.
+   */
+  private _effectiveRpcPoolSize = 0;
   private _batcher: BatchedRpcClient | null = null;
 
   private get server(): SorobanRpc.Server {
-    return this._rpcClient ?? this._standby?.server ?? this._mainServer;
+    return (
+      this._rpcClient ??
+      this._standby?.server ??
+      this._pool?.select() ??
+      this._mainServer
+    );
   }
   private set server(s: SorobanRpc.Server) {
     this._rpcClient = null;
@@ -448,6 +475,21 @@ export class StellarSplitClient {
     if (!this._rpcClient && Array.isArray(config.rpcUrl) && config.rpcUrl.length > 1) {
       this._standby = new WarmStandby(config.rpcUrl);
       this._standby.start();
+    }
+
+    // Connection pool (issue #360). Only enabled on single-endpoint configs
+    // when an external RPC client hasn't been injected via the DI container.
+    const wantsPool =
+      !this._rpcClient &&
+      !this._standby &&
+      (config.rpcPoolSize ?? 0) >= 2;
+    if (wantsPool) {
+      this._effectiveRpcPoolSize = Math.min(Math.max(config.rpcPoolSize!, 1), 5);
+      this._pool = new ConnectionPool({
+        rpcUrl: primaryUrl,
+        poolSize: this._effectiveRpcPoolSize,
+        allowHttp: primaryUrl.startsWith("http://"),
+      });
     }
 
     this.contract = new Contract(config.contractId);
@@ -1057,14 +1099,6 @@ export class StellarSplitClient {
   }
 
   /**
-   * Alias for getPayments — returns all payments for an invoice, each with the donateOnFailure flag.
-   * @param invoiceId - The invoice ID.
-   */
-  getPaymentHistory(invoiceId: string): Promise<Payment[]> {
-    return this.getPayments(invoiceId);
-  }
-
-  /**
    * Verify a CompletionProof returned by the contract's get_completion_proof call.
    * Recomputes the cert_hash from proof fields and compares against the stored value.
    * Works without trusting the SDK caller — verifies the cryptographic proof only.
@@ -1303,6 +1337,9 @@ export class StellarSplitClient {
       await this._queue.shutdown();
     } finally {
       this._standby?.stop();
+
+      this._pool?.dispose();
+      this._pool = null;
 
       if (this._cache && typeof (this._cache as any).persist === "function") {
         await (this._cache as any).persist();
@@ -2226,7 +2263,47 @@ export class StellarSplitClient {
     this.server = new SorobanRpc.Server(config.rpcUrl, {
       allowHttp: config.rpcUrl.startsWith("http://"),
     });
+
+    // Rebuild the connection pool for the new endpoint. We read from
+    // `_effectiveRpcPoolSize` (cached at construction) rather than
+    // `this.config.rpcPoolSize` here because `NetworkConfig` doesn't carry a
+    // pool size — reading from `this.config` after `this.config = config`
+    // above would silently disable pooling on every network switch.
+    if (this._pool) {
+      this._pool.dispose();
+      this._pool = null;
+    }
+    const wantsPool = !this._standby && this._effectiveRpcPoolSize >= 2;
+    if (wantsPool) {
+      try {
+        this._pool = new ConnectionPool({
+          rpcUrl: config.rpcUrl,
+          poolSize: this._effectiveRpcPoolSize,
+          allowHttp: config.rpcUrl.startsWith("http://"),
+        });
+      } catch {
+        // The Soroban SDK can reject bare http:// without allowHttp or ws:// URLs.
+        // Fail open so switchNetwork() stays a no-op rather than crashing the SDK.
+      }
+    }
+
     this.contract = new Contract(config.contractId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection pool monitoring (issue #360)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Snapshot of the underlying RPC connection pool's statistics.
+   *
+   * Returns `null` when the client is configured with the default single
+   * connection. When `rpcPoolSize >= 2` was set at construction time, the
+   * returned {@link PoolStats} reports pool size, available slots,
+   * cumulative request / error / recycle counters, and per-slot details.
+   */
+  getPoolStats() {
+    return this._pool ? this._pool.getStats() : null;
   }
 
   // ---------------------------------------------------------------------------
@@ -2627,7 +2704,6 @@ export class StellarSplitClient {
       throw error;
     }
   }
-
   /**
    * Settle an auction for an invoice, releasing funds to the winning bidder.
    * @param caller - Stellar address of the caller (must sign).

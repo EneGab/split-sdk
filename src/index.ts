@@ -313,6 +313,22 @@ export type { MerkleProof } from "./merkle.js";
 export { MultiplexedClient } from "./multiplexer.js";
 export type { WeightedEndpoint } from "./multiplexer.js";
 
+// Connection pool (issue #360): up to 5 persistent HTTP/2 connections to the
+// primary Soroban RPC endpoint with least-busy selection, 60s idle recycle,
+// and per-slot stats.
+export {
+  ConnectionPool,
+  MAX_POOL_SIZE,
+  DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_POOL_SIZE,
+} from "./connectionPool.js";
+export type {
+  ConnectionPoolConfig,
+  PoolStats,
+  PoolSlotStats,
+  PooledServer,
+} from "./connectionPool.js";
+
 // Request batcher functionality
 export { RequestBatcher, BatchedRpcClient } from "./requestBatcher.js";
 export type { BatcherConfig, BatchFetchers, BatchCallType } from "./requestBatcher.js";
